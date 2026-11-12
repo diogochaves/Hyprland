@@ -599,6 +599,7 @@ std::string CCompositor::yankGPU(const std::string& node) {
 // The whole way out of a GPU: render elsewhere, let go of it, drop what its driver left behind.
 std::string CCompositor::leaveGPU(const std::string& node) {
     SP<Aquamarine::IBackendImplementation> gpu, other;
+    PHLWORKSPACEREF                        shownWorkspace;
     for (auto const& impl : m_aqBackend->getImplementations()) {
         if (impl->type() != Aquamarine::AQ_BACKEND_DRM || impl->drmFD() < 0)
             continue;
@@ -614,6 +615,20 @@ std::string CCompositor::leaveGPU(const std::string& node) {
     }
 
     if (gpu) {
+        // monitor rules are applied lazily, at the next frame: one set just now (enabling the screen
+        // we are moving to) has to count
+        Config::monitorRuleMgr()->ensureMonitorStatus();
+
+        const bool HAS_SCREEN_ELSEWHERE = std::ranges::any_of(State::monitorState()->monitors(), [&](const auto& m) {
+            return m->m_enabled && m->m_output && !m->isMirror() && m->m_output->getBackend() != gpu && m->m_output->getBackend()->type() == Aquamarine::AQ_BACKEND_DRM;
+        });
+        if (!HAS_SCREEN_ELSEWHERE)
+            return "no enabled monitor on another gpu: enable one first";
+
+        // the workspace being looked at, if its screen is one that goes away
+        if (const auto FOCUSED = Desktop::focusState()->monitor(); FOCUSED && FOCUSED->m_output && FOCUSED->m_output->getBackend() == gpu)
+            shownWorkspace = FOCUSED->m_activeWorkspace;
+
         if (!gpu->getPrimary()) {
             if (!other)
                 return "no other gpu to move to";
@@ -623,6 +638,10 @@ std::string CCompositor::leaveGPU(const std::string& node) {
 
         if (!releaseGPU(gpu))
             return "release failed";
+
+        // its workspaces moved to a screen that stays, behind that screen's own: bring it to the front
+        if (const auto WS = shownWorkspace.lock(); WS && WS->m_monitor && WS->m_monitor->m_activeWorkspace != WS)
+            WS->m_monitor->changeWorkspace(WS);
     }
 
     return yankGPU(node);
