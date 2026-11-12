@@ -82,6 +82,8 @@
 #include <sys/stat.h>
 #include <sys/resource.h>
 #include <sys/ioctl.h>
+#include <sys/mman.h>
+#include <cstdio>
 #include <unistd.h>
 #include <xf86drm.h>
 
@@ -478,7 +480,124 @@ bool CCompositor::releaseGPU(SP<Aquamarine::IBackendImplementation> gpu) {
     return m_aqBackend->releaseGpu(gpu);
 }
 
+// Paths a GPU's leftovers in this process point at: its DRM nodes, plus NVIDIA's own device files.
+static std::vector<std::string> gpuDevicePaths(const std::string& node) {
+    std::vector<std::string> paths;
+
+    struct stat              st  = {};
+    drmDevice*               dev = nullptr;
+    if (stat(node.c_str(), &st) != 0 || drmGetDeviceFromDevId(st.st_rdev, 0, &dev) != 0 || !dev)
+        return paths;
+
+    for (size_t i = 0; i < DRM_NODE_MAX; ++i) {
+        if (dev->available_nodes & (1 << i))
+            paths.emplace_back(dev->nodes[i]);
+    }
+
+    if (dev->bustype == DRM_BUS_PCI && dev->deviceinfo.pci->vendor_id == 0x10de)
+        paths.emplace_back("/dev/nvidia");
+
+    drmFreeDevice(&dev);
+    return paths;
+}
+
+std::string CCompositor::yankGPU(const std::string& node) {
+    for (auto const& impl : m_aqBackend->getImplementations()) {
+        if (impl->type() != Aquamarine::AQ_BACKEND_DRM || impl->drmFD() < 0)
+            continue;
+
+        char*             name = drmGetDeviceNameFromFd2(impl->drmFD());
+        const std::string NAME = name ? name : "";
+        free(name); // NOLINT(cppcoreguidelines-no-malloc)
+        if (NAME == node)
+            return "still in use: release it first";
+    }
+
+    const auto PATHS = gpuDevicePaths(node);
+    if (PATHS.empty())
+        return "not a drm device";
+
+    const auto MATCHES = [&](const std::string& target) { return std::ranges::any_of(PATHS, [&](const auto& p) { return target.starts_with(p); }); };
+
+    // What a driver's userspace keeps after its EGL display is gone (NVIDIA: device fds and their mappings)
+    // is exactly what process exit would drop. Drop it by hand, so the kernel driver sees no user left.
+    std::vector<int> fds;
+    std::error_code  ec;
+    for (auto const& e : std::filesystem::directory_iterator("/proc/self/fd", ec)) {
+        const auto TARGET = std::filesystem::read_symlink(e.path(), ec);
+        if (ec || !MATCHES(TARGET.string()))
+            continue;
+
+        try {
+            fds.emplace_back(std::stoi(e.path().filename().string()));
+        } catch (...) { ; }
+    }
+
+    for (auto const& fd : fds) {
+        close(fd);
+    }
+
+    std::vector<std::pair<uintptr_t, uintptr_t>> maps;
+    std::ifstream                                mapsFile("/proc/self/maps");
+    for (std::string line; std::getline(mapsFile, line);) {
+        const auto PATHPOS = line.find('/');
+        if (PATHPOS == std::string::npos || !MATCHES(line.substr(PATHPOS)))
+            continue;
+
+        uintptr_t start = 0, end = 0;
+        if (std::sscanf(line.c_str(), "%lx-%lx", &start, &end) == 2) // NOLINT
+            maps.emplace_back(start, end);
+    }
+
+    for (auto const& [start, end] : maps) {
+        munmap(rc<void*>(start), end - start);
+    }
+
+    // that driver's EGL can't be brought back in this process after this
+    m_yankedGPUs.emplace_back(node);
+
+    LOG(Log::INFO, "GPU swap: yanked {} fds and {} mappings of {}", fds.size(), maps.size(), node);
+    return std::format("ok: {} fds, {} mappings", fds.size(), maps.size());
+}
+
+// The whole way out of a GPU: render elsewhere, let go of it, drop what its driver left behind.
+std::string CCompositor::leaveGPU(const std::string& node) {
+    SP<Aquamarine::IBackendImplementation> gpu, other;
+    for (auto const& impl : m_aqBackend->getImplementations()) {
+        if (impl->type() != Aquamarine::AQ_BACKEND_DRM || impl->drmFD() < 0)
+            continue;
+
+        char*             name = drmGetDeviceNameFromFd2(impl->drmFD());
+        const std::string NAME = name ? name : "";
+        free(name); // NOLINT(cppcoreguidelines-no-malloc)
+
+        if (NAME == node)
+            gpu = impl;
+        else if (!other)
+            other = impl;
+    }
+
+    if (gpu) {
+        if (!gpu->getPrimary()) {
+            if (!other)
+                return "no other gpu to move to";
+            if (!m_aqBackend->switchPrimary(other))
+                return "switch failed";
+        }
+
+        if (!releaseGPU(gpu))
+            return "release failed";
+    }
+
+    return yankGPU(node);
+}
+
 bool CCompositor::acquireGPU(const std::string& node) {
+    if (std::ranges::contains(m_yankedGPUs, node)) {
+        LOG(Log::ERR, "GPU swap: {} was yanked from this process, it can only come back in a new session", node);
+        return false;
+    }
+
     const auto BEFORE = m_aqBackend->getImplementations();
 
     if (!m_aqBackend->acquireGpu(node))

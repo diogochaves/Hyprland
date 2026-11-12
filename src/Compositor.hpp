@@ -63,6 +63,9 @@ class CCompositor {
     void                     onPrimaryGPUChanged(); // aquamarine moved the primary to another GPU
     bool                     releaseGPU(SP<Aquamarine::IBackendImplementation> gpu);
     bool                     acquireGPU(const std::string& node);
+    std::string              yankGPU(const std::string& node);  // after releaseGPU: close what its driver left open in this process
+    std::string              leaveGPU(const std::string& node); // switch away, release, yank
+    std::vector<std::string> m_yankedGPUs;
     void                     startCompositor();
     void                     stopCompositor();
     void                     cleanup();

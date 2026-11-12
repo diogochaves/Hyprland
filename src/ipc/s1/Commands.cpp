@@ -1388,7 +1388,7 @@ static std::string drmNodeOf(int fd) {
     return ret;
 }
 
-// hyprctl gpu list | switch <node> | release <node> | acquire <node>
+// hyprctl gpu list | switch <node> | release <node> | acquire <node> | yank <node> | leave <node>
 static std::string gpuRequest(eHyprCtlOutputFormat format, std::string request) {
     CVarList    vars(request, 0, ' ');
     const auto& BACKEND = g_pCompositor->m_aqBackend;
@@ -1418,10 +1418,16 @@ static std::string gpuRequest(eHyprCtlOutputFormat format, std::string request) 
     }
 
     if (vars.size() < 3)
-        return "usage: gpu list | switch <node> | release <node> | acquire <node>";
+        return "usage: gpu list | switch <node> | release <node> | acquire <node> | yank <node> | leave <node>";
 
     if (vars[1] == "acquire")
         return g_pCompositor->acquireGPU(canonical(vars[2])) ? "ok" : "failed";
+
+    if (vars[1] == "yank")
+        return g_pCompositor->yankGPU(canonical(vars[2]));
+
+    if (vars[1] == "leave")
+        return g_pCompositor->leaveGPU(canonical(vars[2]));
 
     const auto IMPL = find(vars[2]);
     if (!IMPL)
@@ -1433,7 +1439,7 @@ static std::string gpuRequest(eHyprCtlOutputFormat format, std::string request) 
     if (vars[1] == "release")
         return g_pCompositor->releaseGPU(IMPL) ? "ok" : "failed (is it the primary?)";
 
-    return "usage: gpu list | switch <node> | release <node> | acquire <node>";
+    return "usage: gpu list | switch <node> | release <node> | acquire <node> | yank <node> | leave <node>";
 }
 
 static std::string splashRequest(eHyprCtlOutputFormat format, std::string request) {
