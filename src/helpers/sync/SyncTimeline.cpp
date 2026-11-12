@@ -7,6 +7,38 @@
 #include <sys/eventfd.h>
 using namespace Hyprutils::OS;
 
+static std::vector<CSyncTimeline*>& allTimelines() {
+    static std::vector<CSyncTimeline*> timelines;
+    return timelines;
+}
+
+CSyncTimeline::CSyncTimeline() {
+    allTimelines().emplace_back(this);
+}
+
+void CSyncTimeline::moveAllTo(int drmFD) {
+    size_t moved = 0, failed = 0;
+    for (auto* t : allTimelines()) {
+        if (t->m_drmFD == drmFD)
+            continue;
+
+        if (t->m_handle)
+            drmSyncobjDestroy(t->m_drmFD, t->m_handle);
+
+        t->m_handle = 0;
+        t->m_drmFD  = drmFD;
+
+        const int RET = t->m_syncobjFD.isValid() ? drmSyncobjFDToHandle(drmFD, t->m_syncobjFD.get(), &t->m_handle) : drmSyncobjCreate(drmFD, 0, &t->m_handle);
+        if (RET) {
+            t->m_handle = 0;
+            failed++;
+        } else
+            moved++;
+    }
+
+    LOG(Log::DEBUG, "GPU swap: {} sync timelines moved to drm fd {}, {} failed", moved, drmFD, failed);
+}
+
 SP<CSyncTimeline> CSyncTimeline::create(int drmFD_) {
     if (!g_pCompositor->supportsDrmSyncobjTimeline())
         return nullptr;
@@ -41,6 +73,8 @@ SP<CSyncTimeline> CSyncTimeline::create(int drmFD_, CFileDescriptor&& drmSyncobj
 }
 
 CSyncTimeline::~CSyncTimeline() {
+    std::erase(allTimelines(), this);
+
     if (m_handle == 0)
         return;
 

@@ -90,6 +90,9 @@ class CDRMSyncobjProtocol : public IWaylandProtocol {
 
     virtual void bindManager(wl_client* client, void* data, uint32_t ver, uint32_t id);
 
+    // GPU swap: timelines move to the new GPU's fd
+    void onGPUChanged();
+
   private:
     void destroyResource(CDRMSyncobjManagerResource* resource);
     void destroyResource(CDRMSyncobjTimelineResource* resource);

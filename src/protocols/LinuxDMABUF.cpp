@@ -514,40 +514,71 @@ CLinuxDMABufV1Protocol::CLinuxDMABufV1Protocol(const wl_interface* iface, const 
 
         m_formatTable = makeUnique<CDMABUFFormatTable>(eglTranche, tches);
 
-        drmDevice* device = nullptr;
-        if (drmGetDeviceFromDevId(m_mainDevice, 0, &device) != 0) {
-            LOG(Log::ERR, "failed to get drm dev, disabling linux dmabuf");
-            removeGlobal();
-            return;
-        }
-
-        if (g_pCompositor->m_drmRenderNode.fd >= 0 && rendererFD == g_pCompositor->m_drmRenderNode.fd) {
-            // Already using the compositor's render node, reuse it.
-            m_mainDeviceFD = CFileDescriptor{fcntl(g_pCompositor->m_drmRenderNode.fd, F_DUPFD_CLOEXEC, 0)};
-            drmFreeDevice(&device);
-            if (!m_mainDeviceFD.isValid()) {
-                LOG(Log::ERR, "failed to open rendernode, disabling linux dmabuf");
-                removeGlobal();
-                return;
-            }
-
-            return; // already using rendernode.
-        }
-
-        if (device->available_nodes & (1 << DRM_NODE_RENDER)) {
-            const char* name = device->nodes[DRM_NODE_RENDER];
-            m_mainDeviceFD   = CFileDescriptor{open(name, O_RDWR | O_CLOEXEC)};
-            drmFreeDevice(&device);
-            if (!m_mainDeviceFD.isValid()) {
-                LOG(Log::ERR, "failed to open drm dev, disabling linux dmabuf");
-                removeGlobal();
-                return;
-            }
-        } else {
-            LOG(Log::ERR, "DRM device {} has no render node, disabling linux dmabuf checks", device->nodes[DRM_NODE_PRIMARY] ? device->nodes[DRM_NODE_PRIMARY] : "null");
-            drmFreeDevice(&device);
-        }
+        openMainDevice(rendererFD);
     });
+}
+
+void CLinuxDMABufV1Protocol::openMainDevice(int rendererFD) {
+    m_mainDeviceFD.reset();
+
+    drmDevice* device = nullptr;
+    if (drmGetDeviceFromDevId(m_mainDevice, 0, &device) != 0) {
+        LOG(Log::ERR, "failed to get drm dev, disabling linux dmabuf");
+        removeGlobal();
+        return;
+    }
+
+    if (g_pCompositor->m_drmRenderNode.fd >= 0 && rendererFD == g_pCompositor->m_drmRenderNode.fd) {
+        // Already using the compositor's render node, reuse it.
+        m_mainDeviceFD = CFileDescriptor{fcntl(g_pCompositor->m_drmRenderNode.fd, F_DUPFD_CLOEXEC, 0)};
+        drmFreeDevice(&device);
+        if (!m_mainDeviceFD.isValid()) {
+            LOG(Log::ERR, "failed to open rendernode, disabling linux dmabuf");
+            removeGlobal();
+        }
+
+        return; // already using rendernode.
+    }
+
+    if (device->available_nodes & (1 << DRM_NODE_RENDER)) {
+        const char* name = device->nodes[DRM_NODE_RENDER];
+        m_mainDeviceFD   = CFileDescriptor{open(name, O_RDWR | O_CLOEXEC)};
+        drmFreeDevice(&device);
+        if (!m_mainDeviceFD.isValid()) {
+            LOG(Log::ERR, "failed to open drm dev, disabling linux dmabuf");
+            removeGlobal();
+        }
+    } else {
+        LOG(Log::ERR, "DRM device {} has no render node, disabling linux dmabuf checks", device->nodes[DRM_NODE_PRIMARY] ? device->nodes[DRM_NODE_PRIMARY] : "null");
+        drmFreeDevice(&device);
+    }
+}
+
+// GPU swap: a new main device, renderer formats and scanout formats, sent to every client that asked for feedback
+void CLinuxDMABufV1Protocol::onGPUChanged() {
+    if (!m_formatTable)
+        return;
+
+    const int  RENDERER_FD = g_pCompositor->m_drmRenderNode.fd >= 0 ? g_pCompositor->m_drmRenderNode.fd : g_pCompositor->m_drm.fd;
+    const auto DEV         = devIDFromFD(RENDERER_FD);
+    if (!DEV.has_value()) {
+        LOG(Log::ERR, "GPU swap: failed to get the new drm dev, linux dmabuf keeps the old one");
+        return;
+    }
+
+    m_mainDevice = *DEV;
+    openMainDevice(RENDERER_FD);
+
+    m_formatTable->m_rendererTranche.device  = m_mainDevice;
+    m_formatTable->m_rendererTranche.formats = g_pHyprRenderer->getDRMFormats();
+
+    for (auto& [mon, tranche] : m_formatTable->m_monitorTranches) {
+        tranche.device = m_mainDevice;
+        if (mon && mon->m_output)
+            tranche.formats = mon->m_output->getRenderFormats();
+    }
+
+    resetFormatTable();
 }
 
 void CLinuxDMABufV1Protocol::resetFormatTable() {

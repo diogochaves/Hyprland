@@ -61,6 +61,8 @@ class CCompositor {
     void                     initServer(std::string socketName, int socketFd);
     void                     refreshDRMFDs();
     void                     onPrimaryGPUChanged(); // aquamarine moved the primary to another GPU
+    bool                     releaseGPU(SP<Aquamarine::IBackendImplementation> gpu);
+    bool                     acquireGPU(const std::string& node);
     void                     startCompositor();
     void                     stopCompositor();
     void                     cleanup();

@@ -199,6 +199,19 @@ bool CDRMSyncobjManagerResource::good() {
     return m_resource->resource();
 }
 
+void CDRMSyncobjProtocol::onGPUChanged() {
+    if (g_pCompositor->m_drmRenderNode.syncObjSupport)
+        m_drmFD = g_pCompositor->m_drmRenderNode.fd;
+    else if (g_pCompositor->m_drm.syncobjSupport)
+        m_drmFD = g_pCompositor->m_drm.fd;
+    else {
+        LOG(Log::ERR, "CDRMSyncobjProtocol: the new GPU has no syncobj timelines; explicit sync clients will break");
+        return;
+    }
+
+    CSyncTimeline::moveAllTo(m_drmFD);
+}
+
 CDRMSyncobjProtocol::CDRMSyncobjProtocol(const wl_interface* iface, const int& ver, const std::string& name) : IWaylandProtocol(iface, ver, name) {
     if (g_pCompositor->m_drmRenderNode.syncObjSupport)
         m_drmFD = g_pCompositor->m_drmRenderNode.fd;

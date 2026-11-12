@@ -103,6 +103,7 @@ class CDRMLeaseProtocol : public IWaylandProtocol {
 
     SP<Aquamarine::IBackendImplementation> getBackend();
     std::string                            getDeviceName();
+    SP<Aquamarine::IBackendImplementation> backend();
     bool                                   good();
 
   private:

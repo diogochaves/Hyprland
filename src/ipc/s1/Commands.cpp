@@ -1421,7 +1421,7 @@ static std::string gpuRequest(eHyprCtlOutputFormat format, std::string request) 
         return "usage: gpu list | switch <node> | release <node> | acquire <node>";
 
     if (vars[1] == "acquire")
-        return BACKEND->acquireGpu(canonical(vars[2])) ? "ok" : "failed";
+        return g_pCompositor->acquireGPU(canonical(vars[2])) ? "ok" : "failed";
 
     const auto IMPL = find(vars[2]);
     if (!IMPL)
@@ -1431,7 +1431,7 @@ static std::string gpuRequest(eHyprCtlOutputFormat format, std::string request) 
         return BACKEND->switchPrimary(IMPL) ? "ok" : "failed";
 
     if (vars[1] == "release")
-        return BACKEND->releaseGpu(IMPL) ? "ok" : "failed (is it the primary?)";
+        return g_pCompositor->releaseGPU(IMPL) ? "ok" : "failed (is it the primary?)";
 
     return "usage: gpu list | switch <node> | release <node> | acquire <node>";
 }

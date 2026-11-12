@@ -54,6 +54,10 @@
 #include "config/ConfigManager.hpp"
 #include "render/OpenGL.hpp"
 #include "protocols/types/DMABuffer.hpp"
+#include "protocols/DRMLease.hpp"
+#include "protocols/DRMSyncobj.hpp"
+#include "protocols/MesaDRM.hpp"
+#include "protocols/LinuxDMABUF.hpp"
 #include "managers/input/InputManager.hpp"
 #include "animation/AnimationManager.hpp"
 #include "ipc/s2/S2.hpp"
@@ -464,6 +468,34 @@ void CCompositor::refreshDRMFDs() {
 #endif
 }
 
+bool CCompositor::releaseGPU(SP<Aquamarine::IBackendImplementation> gpu) {
+    if (!gpu || !gpu->getPrimary())
+        return false; // not ours, or the primary
+
+    // the lease protocol holds the backend: clients lose that device
+    std::erase_if(PROTO::lease, [&](const auto& entry) { return entry.second && entry.second->backend() == gpu; });
+
+    return m_aqBackend->releaseGpu(gpu);
+}
+
+bool CCompositor::acquireGPU(const std::string& node) {
+    const auto BEFORE = m_aqBackend->getImplementations();
+
+    if (!m_aqBackend->acquireGpu(node))
+        return false;
+
+    for (auto const& b : m_aqBackend->getImplementations()) {
+        if (b->type() != Aquamarine::AQ_BACKEND_DRM || std::ranges::contains(BEFORE, b))
+            continue;
+
+        auto lease = makeShared<CDRMLeaseProtocol>(&wp_drm_lease_device_v1_interface, 1, "DRMLease", b);
+        if (lease->good())
+            PROTO::lease.emplace(lease->getDeviceName(), lease);
+    }
+
+    return true;
+}
+
 void CCompositor::onPrimaryGPUChanged() {
     refreshDRMFDs();
 
@@ -473,6 +505,14 @@ void CCompositor::onPrimaryGPUChanged() {
     g_pHyprOpenGL->restoreContext(m_drmRenderNode.fd >= 0 ? m_drmRenderNode.fd : m_drm.fd);
     CDMABuffer::reimportAll();
     Pointer::mgr()->onGPUChanged();
+
+    // tell clients: sync timelines first (their handles die with the old fd), then the new device
+    if (PROTO::sync)
+        PROTO::sync->onGPUChanged();
+    if (PROTO::mesaDRM)
+        PROTO::mesaDRM->onGPUChanged();
+    if (PROTO::linuxDma)
+        PROTO::linuxDma->onGPUChanged();
 
     for (auto const& m : State::monitorState()->monitors()) {
         g_pHyprRenderer->damageMonitor(m);

@@ -282,6 +282,10 @@ void CDRMLeaseDeviceResource::sendConnector(PHLMONITOR monitor) {
     RESOURCE->sendData();
 }
 
+SP<Aquamarine::IBackendImplementation> CDRMLeaseProtocol::backend() {
+    return m_backend;
+}
+
 CDRMLeaseProtocol::CDRMLeaseProtocol(const wl_interface* iface, const int& ver, const std::string& name, SP<Aquamarine::IBackendImplementation> backend_) :
     IWaylandProtocol(iface, ver, name) {
     if (backend_->type() != Aquamarine::AQ_BACKEND_DRM)

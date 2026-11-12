@@ -40,7 +40,11 @@ class CMesaDRMProtocol : public IWaylandProtocol {
 
     virtual void bindManager(wl_client* client, void* data, uint32_t ver, uint32_t id);
 
+    // GPU swap: the device new binds are told about
+    void onGPUChanged();
+
   private:
+    void updateNode();
     void destroyResource(CMesaDRMResource* resource);
     void destroyResource(CMesaDRMBufferResource* resource);
 

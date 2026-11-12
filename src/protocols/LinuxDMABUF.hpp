@@ -118,6 +118,7 @@ class CLinuxDMABufV1Protocol : public IWaylandProtocol {
 
     virtual void bindManager(wl_client* client, void* data, uint32_t ver, uint32_t id);
     void         updateScanoutTranche(SP<CWLSurfaceResource> surface, PHLMONITOR pMonitor);
+    void         onGPUChanged();
     dev_t        getMainDevice();
 
   private:
@@ -127,6 +128,7 @@ class CLinuxDMABufV1Protocol : public IWaylandProtocol {
     void destroyResource(CLinuxDMABuffer* resource);
 
     void resetFormatTable();
+    void openMainDevice(int rendererFD);
 
     //
     std::vector<UP<CLinuxDMABUFResource>>         m_managers;

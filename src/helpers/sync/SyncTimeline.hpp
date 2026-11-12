@@ -32,11 +32,15 @@ class CSyncTimeline {
     bool                           transfer(SP<CSyncTimeline> from, uint64_t fromPoint, uint64_t toPoint);
     void                           signal(uint64_t point);
 
+    // GPU swap: handles belong to a DRM fd. Every live timeline gets a handle on the new fd
+    // (a client's from its syncobj fd, ours fresh), while the old fd is still open.
+    static void                    moveAllTo(int drmFD);
+
     int                            m_drmFD = -1;
     Hyprutils::OS::CFileDescriptor m_syncobjFD;
     uint32_t                       m_handle = 0;
     WP<CSyncTimeline>              m_self;
 
   private:
-    CSyncTimeline() = default;
+    CSyncTimeline();
 };

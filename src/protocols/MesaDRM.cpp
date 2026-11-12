@@ -116,6 +116,15 @@ bool CMesaDRMResource::good() {
 }
 
 CMesaDRMProtocol::CMesaDRMProtocol(const wl_interface* iface, const int& ver, const std::string& name) : IWaylandProtocol(iface, ver, name) {
+    updateNode();
+}
+
+void CMesaDRMProtocol::onGPUChanged() {
+    // wl_drm can't tell a bound client about a new device: only new binds see it
+    updateNode();
+}
+
+void CMesaDRMProtocol::updateNode() {
     drmDevice* dev   = nullptr;
     int        drmFD = g_pCompositor->m_drmRenderNode.fd >= 0 ? g_pCompositor->m_drmRenderNode.fd : g_pCompositor->m_drm.fd;
 
