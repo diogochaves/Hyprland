@@ -21,6 +21,9 @@ class CDMABuffer : public IHLBuffer {
     std::vector<Hyprutils::OS::CFileDescriptor>    exportSyncFiles();
     bool                                           m_success = false;
 
+    // GPU swap: every live buffer whose fds are still open is imported again on the new GPU
+    static void reimportAll();
+
   private:
     // Attribute copies are borrowed views; only m_fds owns the planes.
     Aquamarine::SDMABUFAttrs                      m_attrs;
@@ -29,4 +32,12 @@ class CDMABuffer : public IHLBuffer {
     struct {
         CHyprSignalListener resourceDestroy;
     } m_listeners;
+
+    bool reimport();
+
+    struct SRegistration {
+        SRegistration(CDMABuffer* buffer);
+        ~SRegistration();
+        CDMABuffer* m_buffer = nullptr;
+    } m_registration{this};
 };

@@ -392,6 +392,19 @@ void CPointerManager::resetCursorImage(bool apply) {
     m_events.cursorChanged.emit();
 }
 
+void CPointerManager::onGPUChanged() {
+    for (auto const& state : m_monitorStates) {
+        state->cursorFrontBuffer.reset();
+        state->hwApplied = false;
+
+        if (state->monitor)
+            state->monitor->m_cursorSwapchain.reset();
+    }
+
+    m_cursorImages.clear();
+    updateCursorBackend();
+}
+
 void CPointerManager::updateCursorBackend() {
     const auto damageSoftwareLeftover = [](const SP<SMonitorPointerState>& state, const PHLMONITOR& m) {
         if (!state->swRendered)

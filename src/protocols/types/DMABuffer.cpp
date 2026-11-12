@@ -2,12 +2,62 @@
 #include "WLBuffer.hpp"
 #include "../../desktop/view/LayerSurface.hpp"
 #include "../../render/Renderer.hpp"
+#include "../../render/OpenGL.hpp"
+#include "../../render/gl/GLTexture.hpp"
 #include "../../helpers/Format.hpp"
 #include "helpers/Drm.hpp"
 #include <hyprgraphics/egl/Egl.hpp>
 
 using namespace Hyprutils::OS;
 using namespace Hyprgraphics::Egl;
+
+static std::vector<CDMABuffer*>& allDMABuffers() {
+    static std::vector<CDMABuffer*> buffers;
+    return buffers;
+}
+
+CDMABuffer::SRegistration::SRegistration(CDMABuffer* buffer) : m_buffer(buffer) {
+    allDMABuffers().emplace_back(buffer);
+}
+
+CDMABuffer::SRegistration::~SRegistration() {
+    std::erase(allDMABuffers(), m_buffer);
+}
+
+void CDMABuffer::reimportAll() {
+    size_t ok = 0, failed = 0, closed = 0;
+    for (auto* b : allDMABuffers()) {
+        if (!b->m_texture || !b->m_fds.at(0).isValid()) {
+            closed++;
+            continue;
+        }
+
+        if (b->reimport())
+            ok++;
+        else
+            failed++;
+    }
+
+    LOG(Log::DEBUG, "GPU swap: dmabufs re-imported: {} ok, {} failed (they keep their last picture), {} already closed", ok, failed, closed);
+}
+
+bool CDMABuffer::reimport() {
+    if (g_pHyprRenderer->type() != Render::IHyprRenderer::RT_GL)
+        return false;
+
+    const auto TEX = dynamic_cast<Render::GL::CGLTexture*>(m_texture.get());
+    if (!TEX)
+        return false;
+
+    Render::GL::g_pHyprOpenGL->makeEGLCurrent();
+
+    auto image = Render::GL::g_pHyprOpenGL->createEGLImage(m_attrs);
+    if (!image)
+        return false;
+
+    TEX->rebindImage(image);
+    return true;
+}
 
 CDMABuffer::CDMABuffer(uint32_t id, wl_client* client, const Aquamarine::SDMABUFAttrs& attrs_, std::array<CFileDescriptor, 4> fds) : m_attrs(attrs_), m_fds(std::move(fds)) {
     for (size_t i = 0; i < m_fds.size(); ++i)

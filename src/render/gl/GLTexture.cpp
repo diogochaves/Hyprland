@@ -1,5 +1,6 @@
 #include "GLTexture.hpp"
 #include "../Renderer.hpp"
+#include "../OpenGL.hpp"
 #include "../../Compositor.hpp"
 #include "../../helpers/Format.hpp"
 #include "../Texture.hpp"
@@ -8,6 +9,122 @@
 
 using namespace Hyprgraphics::Egl;
 using namespace Render::GL;
+
+static std::vector<CGLTexture*>& allTextures() {
+    static std::vector<CGLTexture*> textures;
+    return textures;
+}
+
+CGLTexture::SRegistration::SRegistration(CGLTexture* tex) : m_tex(tex) {
+    allTextures().emplace_back(tex);
+}
+
+CGLTexture::SRegistration::~SRegistration() {
+    std::erase(allTextures(), m_tex);
+}
+
+void CGLTexture::contextLostAll() {
+    CFramebufferBindingGuard bindings{g_pHyprOpenGL};
+
+    size_t                   kept = 0, bytes = 0;
+    for (auto* tex : allTextures()) {
+        tex->contextLost();
+        if (!tex->m_lost.pixels.empty()) {
+            kept++;
+            bytes += tex->m_lost.pixels.size();
+        }
+    }
+
+    LOG(Log::DEBUG, "GPU swap: {} textures lost, {} kept on the CPU ({} MiB)", allTextures().size(), kept, bytes / (1024 * 1024));
+}
+
+void CGLTexture::contextRestoredAll() {
+    for (auto* tex : allTextures()) {
+        tex->contextRestored();
+    }
+}
+
+void CGLTexture::contextLost() {
+    m_lost.active = m_texID != 0;
+    m_lost.states = m_cachedStates;
+    m_lost.pixels.clear();
+
+    if (m_texID && m_target == GL_TEXTURE_2D && m_size.x >= 1 && m_size.y >= 1) {
+        // read the texels back through a throwaway framebuffer
+        GLuint fbo = 0;
+        glGenFramebuffers(1, &fbo);
+        g_pHyprOpenGL->bindFramebuffer(GL_FRAMEBUFFER, fbo);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, m_texID, 0);
+
+        if (glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE) {
+            m_lost.pixels.resize(sc<size_t>(m_size.x) * sc<size_t>(m_size.y) * 4);
+            while (glGetError() != GL_NO_ERROR)
+                ;
+            glPixelStorei(GL_PACK_ALIGNMENT, 1);
+            glReadPixels(0, 0, m_size.x, m_size.y, GL_RGBA, GL_UNSIGNED_BYTE, m_lost.pixels.data());
+            glPixelStorei(GL_PACK_ALIGNMENT, 4);
+            if (glGetError() != GL_NO_ERROR)
+                m_lost.pixels.clear(); // not a format we can read as RGBA8 (float, depth): comes back empty
+        }
+
+        glDeleteFramebuffers(1, &fbo);
+        g_pHyprOpenGL->onFramebufferDeleted(fbo);
+    }
+
+    if (m_texID)
+        GLCALL(glDeleteTextures(1, &m_texID));
+    m_texID = 0;
+
+    if (m_eglImage)
+        g_pHyprOpenGL->m_proc.eglDestroyImageKHR(g_pHyprOpenGL->m_eglDisplay, m_eglImage);
+    m_eglImage = nullptr;
+
+    m_cachedStates.fill(std::nullopt);
+}
+
+void CGLTexture::contextRestored() {
+    if (!m_lost.active)
+        return;
+
+    m_lost.active = false;
+
+    GLCALL(glGenTextures(1, &m_texID));
+    bind();
+
+    static constexpr std::array<GLenum, TEXTURE_PAR_LAST> PNAMES = {
+        GL_TEXTURE_WRAP_S, GL_TEXTURE_WRAP_T, GL_TEXTURE_MAG_FILTER, GL_TEXTURE_MIN_FILTER, GL_TEXTURE_SWIZZLE_R, GL_TEXTURE_SWIZZLE_G, GL_TEXTURE_SWIZZLE_B, GL_TEXTURE_SWIZZLE_A,
+    };
+    for (size_t i = 0; i < TEXTURE_PAR_LAST; ++i) {
+        if (m_lost.states[i])
+            setTexParameter(PNAMES[i], *m_lost.states[i]);
+    }
+
+    if (m_target == GL_TEXTURE_3D && !m_lutCopy.empty()) {
+        GLCALL(glPixelStorei(GL_UNPACK_ALIGNMENT, 1));
+        GLCALL(glTexImage3D(GL_TEXTURE_3D, 0, GL_RGBA16F, m_lutN, m_lutN, m_lutN, 0, GL_RGBA, GL_FLOAT, m_lutCopy.data()));
+        GLCALL(glPixelStorei(GL_UNPACK_ALIGNMENT, 4));
+    } else if (!m_lost.pixels.empty()) {
+        GLCALL(glPixelStorei(GL_UNPACK_ALIGNMENT, 1));
+        GLCALL(glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, m_size.x, m_size.y, 0, GL_RGBA, GL_UNSIGNED_BYTE, m_lost.pixels.data()));
+        GLCALL(glPixelStorei(GL_UNPACK_ALIGNMENT, 4));
+    }
+
+    unbind();
+
+    m_lost.pixels.clear();
+    m_lost.pixels.shrink_to_fit();
+}
+
+void CGLTexture::rebindImage(void* image) {
+    if (!image || !m_texID || m_target != GL_TEXTURE_2D)
+        return;
+
+    bind();
+    GLCALL(g_pHyprOpenGL->m_proc.glEGLImageTargetTexture2DOES(m_target, image));
+    unbind();
+
+    m_eglImage = image;
+}
 
 CGLTexture::CGLTexture(bool opaque) {
     m_opaque = opaque;
@@ -116,6 +233,9 @@ CGLTexture::CGLTexture(std::span<const float> lut3D, size_t N) : ITexture(lut3D,
     }
 
     GLCALL(glTexImage3D(GL_TEXTURE_3D, 0, GL_RGBA16F, N, N, N, 0, GL_RGBA, GL_FLOAT, rgba.data()));
+
+    m_lutN    = N;
+    m_lutCopy = std::move(rgba);
 
     unbind();
 }

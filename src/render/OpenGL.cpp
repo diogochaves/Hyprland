@@ -45,6 +45,8 @@
 #include "pass/PreBlurElement.hpp"
 #include "pass/ClearPassElement.hpp"
 #include "GLRenderer.hpp"
+#include "gl/GLTexture.hpp"
+#include "gl/GLFramebuffer.hpp"
 #include "Shader.hpp"
 #include "AsyncResourceGatherer.hpp"
 #include <ranges>
@@ -337,6 +339,60 @@ CHyprOpenGLImpl::CHyprOpenGLImpl() : m_drmFD(g_pCompositor->m_drmRenderNode.fd >
 
     RASSERT(eglBindAPI(EGL_OPENGL_ES_API) != EGL_FALSE, "Couldn't bind to EGL's opengl ES API. This means your gpu driver f'd up. This is not a hyprland issue.");
 
+    initContext();
+
+    static auto addLastPressToHistory = [](const Vector2D& pos, bool killing, bool touch) {
+        // (static, and CHyprOpenGLImpl is never re-created: read it through the global)
+        auto* const self = g_pHyprOpenGL.get();
+        if (!self)
+            return;
+
+        // shift the new pos and time in
+        std::ranges::rotate(self->m_pressedHistoryPositions, self->m_pressedHistoryPositions.end() - 1);
+        self->m_pressedHistoryPositions[0] = pos;
+
+        std::ranges::rotate(self->m_pressedHistoryTimers, self->m_pressedHistoryTimers.end() - 1);
+        self->m_pressedHistoryTimers[0].reset();
+
+        // shift killed flag in
+        self->m_pressedHistoryKilled <<= 1;
+        self->m_pressedHistoryKilled |= killing ? 1 : 0;
+#if POINTER_PRESSED_HISTORY_LENGTH < 32
+        self->m_pressedHistoryKilled &= (1U << POINTER_PRESSED_HISTORY_LENGTH) - 1;
+#endif
+
+        // shift touch flag in
+        self->m_pressedHistoryTouched <<= 1;
+        self->m_pressedHistoryTouched |= touch ? 1 : 0;
+#if POINTER_PRESSED_HISTORY_LENGTH < 32
+        self->m_pressedHistoryTouched &= (1U << POINTER_PRESSED_HISTORY_LENGTH) - 1;
+#endif
+    };
+
+    static auto P2 = Event::bus()->m_events.input.mouse.button.listen([](IPointer::SButtonEvent e, Event::SCallbackInfo&) {
+        if (e.state != WL_POINTER_BUTTON_STATE_PRESSED)
+            return;
+
+        addLastPressToHistory(Pointer::mgr()->untransformedPosition(), g_pInputManager->getClickMode() == CLICKMODE_KILL, false);
+    });
+
+    static auto P3 = Event::bus()->m_events.input.touch.down.listen([](ITouch::SDownEvent e, Event::SCallbackInfo&) {
+        auto PMONITOR = State::monitorState()->query().name(!e.device->m_boundOutput.empty() ? e.device->m_boundOutput : "").run();
+
+        PMONITOR = PMONITOR ? PMONITOR : Desktop::focusState()->monitor();
+
+        const auto TOUCH_COORDS = PMONITOR->m_position + (e.pos * PMONITOR->m_size);
+
+        addLastPressToHistory(TOUCH_COORDS, g_pInputManager->getClickMode() == CLICKMODE_KILL, true);
+    });
+
+    m_finalScreenShader = makeShared<CShader>();
+}
+
+// Everything that belongs to one GPU: the EGL display and context, and what was read from them.
+void CHyprOpenGLImpl::initContext() {
+    const std::string EGLEXTENSIONS = eglQueryString(EGL_NO_DISPLAY, EGL_EXTENSIONS);
+
     bool success = false;
     if (EGLEXTENSIONS.contains("EXT_platform_device") || !m_proc.eglQueryDevicesEXT || !m_proc.eglQueryDeviceStringEXT) {
         m_eglDevice = eglDeviceFromDRMFD(m_drmFD);
@@ -413,48 +469,87 @@ CHyprOpenGLImpl::CHyprOpenGLImpl() : m_drmFD(g_pCompositor->m_drmRenderNode.fd >
     initDRMFormats();
 
     RASSERT(eglMakeCurrent(m_eglDisplay, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT), "Couldn't unset current EGL!");
+}
 
-    static auto addLastPressToHistory = [this](const Vector2D& pos, bool killing, bool touch) {
-        // shift the new pos and time in
-        std::ranges::rotate(m_pressedHistoryPositions, m_pressedHistoryPositions.end() - 1);
-        m_pressedHistoryPositions[0] = pos;
+void CHyprOpenGLImpl::destroyContext() {
+    if (m_eglDisplay)
+        eglMakeCurrent(m_eglDisplay, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
 
-        std::ranges::rotate(m_pressedHistoryTimers, m_pressedHistoryTimers.end() - 1);
-        m_pressedHistoryTimers[0].reset();
+    if (m_eglDisplay && m_eglContext != EGL_NO_CONTEXT)
+        eglDestroyContext(m_eglDisplay, m_eglContext);
 
-        // shift killed flag in
-        m_pressedHistoryKilled <<= 1;
-        m_pressedHistoryKilled |= killing ? 1 : 0;
-#if POINTER_PRESSED_HISTORY_LENGTH < 32
-        m_pressedHistoryKilled &= (1U << POINTER_PRESSED_HISTORY_LENGTH) - 1;
-#endif
+    if (m_eglDisplay)
+        eglTerminate(m_eglDisplay);
 
-        // shift touch flag in
-        m_pressedHistoryTouched <<= 1;
-        m_pressedHistoryTouched |= touch ? 1 : 0;
-#if POINTER_PRESSED_HISTORY_LENGTH < 32
-        m_pressedHistoryTouched &= (1U << POINTER_PRESSED_HISTORY_LENGTH) - 1;
-#endif
-    };
+    eglReleaseThread();
 
-    static auto P2 = Event::bus()->m_events.input.mouse.button.listen([](IPointer::SButtonEvent e, Event::SCallbackInfo&) {
-        if (e.state != WL_POINTER_BUTTON_STATE_PRESSED)
-            return;
+    if (m_gbmDevice)
+        gbm_device_destroy(m_gbmDevice);
 
-        addLastPressToHistory(Pointer::mgr()->untransformedPosition(), g_pInputManager->getClickMode() == CLICKMODE_KILL, false);
-    });
+    m_gbmFD.reset();
+    m_gbmDevice  = nullptr;
+    m_eglContext = nullptr;
+    m_eglDisplay = nullptr;
+    m_eglDevice  = nullptr;
+}
 
-    static auto P3 = Event::bus()->m_events.input.touch.down.listen([](ITouch::SDownEvent e, Event::SCallbackInfo&) {
-        auto PMONITOR = State::monitorState()->query().name(!e.device->m_boundOutput.empty() ? e.device->m_boundOutput : "").run();
+void CHyprOpenGLImpl::loseContext() {
+    LOG(Log::INFO, "GPU swap: tearing the renderer down on drm fd {}", m_drmFD);
 
-        PMONITOR = PMONITOR ? PMONITOR : Desktop::focusState()->monitor();
+    makeEGLCurrent();
+    glFinish();
 
-        const auto TOUCH_COORDS = PMONITOR->m_position + (e.pos * PMONITOR->m_size);
+    // 1. while the old context is current: let go of every GL object, keeping textures' pixels
+    g_pHyprRenderer->onContextLost();
+    m_monitorBGFBs.clear();
+    Render::GL::CGLFramebuffer::contextLostAll();
+    Render::GL::CGLTexture::contextLostAll();
 
-        addLastPressToHistory(TOUCH_COORDS, g_pInputManager->getClickMode() == CLICKMODE_KILL, true);
-    });
+    if (m_shaders) {
+        for (auto& variants : m_shaders->fragVariants) {
+            variants.clear();
+        }
+    }
+    m_finalScreenShader->destroy();
 
-    m_finalScreenShader = makeShared<CShader>();
+    // 2. the context and its display
+    destroyContext();
+
+    m_lastViewport = {};
+    m_capStatus.fill(false);
+    m_activeTexture    = GL_TEXTURE0;
+    m_boundArrayBuffer = 0;
+    m_boundDrawFB      = 0;
+    m_boundReadFB      = 0;
+    m_blendSFactor     = GL_ONE;
+    m_blendDFactor     = GL_ZERO;
+    m_blend            = false;
+    m_currentProgram   = 0;
+    m_drmFormats.clear();
+    m_hasModifiers      = false;
+    m_fp16Supported     = false;
+    m_eglContextVersion = EGL_CONTEXT_GLES_3_2;
+    m_exts              = {.KHR_display_reference = m_exts.KHR_display_reference};
+
+    m_contextLost = true;
+}
+
+void CHyprOpenGLImpl::restoreContext(int drmFD) {
+    if (!m_contextLost)
+        return;
+
+    m_contextLost = false;
+
+    // 3. the same on the new GPU
+    m_drmFD = drmFD;
+    initContext();
+    makeEGLCurrent();
+
+    Render::GL::CGLTexture::contextRestoredAll();
+    g_pHyprRenderer->m_reloadScreenShader = true;
+    g_pHyprRenderer->onContextRestored();
+
+    LOG(Log::INFO, "GPU swap: renderer is now {} ({})", rc<const char*>(glGetString(GL_RENDERER)), rc<const char*>(glGetString(GL_VENDOR)));
 }
 
 CHyprOpenGLImpl::~CHyprOpenGLImpl() {

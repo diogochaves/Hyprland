@@ -28,6 +28,8 @@
 #include <hyprutils/string/VarList.hpp>
 using namespace Hyprutils::String;
 #include <aquamarine/input/Input.hpp>
+#include <aquamarine/backend/Backend.hpp>
+#include <xf86drm.h>
 
 #include "../../config/shared/complex/ComplexDataTypes.hpp"
 #include "../../config/lua/ConfigManager.hpp"
@@ -1376,6 +1378,64 @@ static std::string killRequest(eHyprCtlOutputFormat format, std::string request)
     return "ok";
 }
 
+static std::string drmNodeOf(int fd) {
+    if (fd < 0)
+        return "";
+
+    char*       name = drmGetDeviceNameFromFd2(fd);
+    std::string ret  = name ? name : "";
+    free(name); // NOLINT(cppcoreguidelines-no-malloc)
+    return ret;
+}
+
+// hyprctl gpu list | switch <node> | release <node> | acquire <node>
+static std::string gpuRequest(eHyprCtlOutputFormat format, std::string request) {
+    CVarList    vars(request, 0, ' ');
+    const auto& BACKEND = g_pCompositor->m_aqBackend;
+
+    auto        canonical = [](const std::string& path) {
+        std::error_code ec;
+        const auto      P = std::filesystem::canonical(path, ec);
+        return ec ? path : P.string();
+    };
+
+    auto find = [&](const std::string& node) -> SP<Aquamarine::IBackendImplementation> {
+        for (auto const& impl : BACKEND->getImplementations()) {
+            if (impl->type() == Aquamarine::AQ_BACKEND_DRM && drmNodeOf(impl->drmFD()) == canonical(node))
+                return impl;
+        }
+        return nullptr;
+    };
+
+    if (vars.size() < 2 || vars[1] == "list") {
+        std::string out;
+        for (auto const& impl : BACKEND->getImplementations()) {
+            if (impl->type() != Aquamarine::AQ_BACKEND_DRM)
+                continue;
+            out += std::format("{}{}\n", drmNodeOf(impl->drmFD()), impl->getPrimary() ? "" : " (primary)");
+        }
+        return out;
+    }
+
+    if (vars.size() < 3)
+        return "usage: gpu list | switch <node> | release <node> | acquire <node>";
+
+    if (vars[1] == "acquire")
+        return BACKEND->acquireGpu(canonical(vars[2])) ? "ok" : "failed";
+
+    const auto IMPL = find(vars[2]);
+    if (!IMPL)
+        return "no such gpu in use";
+
+    if (vars[1] == "switch")
+        return BACKEND->switchPrimary(IMPL) ? "ok" : "failed";
+
+    if (vars[1] == "release")
+        return BACKEND->releaseGpu(IMPL) ? "ok" : "failed (is it the primary?)";
+
+    return "usage: gpu list | switch <node> | release <node> | acquire <node>";
+}
+
 static std::string splashRequest(eHyprCtlOutputFormat format, std::string request) {
     return g_pCompositor->m_currentSplash;
 }
@@ -2120,6 +2180,7 @@ void IPC::Socket1::registerBuiltinCommands(CSocket1& socket) {
     socket.registerCommand(legacyCommand("output", COMMAND_MATCH_PREFIX, dispatchOutput));
     socket.registerCommand(legacyCommand("dispatch", COMMAND_MATCH_PREFIX, dispatchRequest));
     socket.registerCommand(legacyCommand("setcursor", COMMAND_MATCH_PREFIX, dispatchSetCursor));
+    socket.registerCommand(legacyCommand("gpu", COMMAND_MATCH_PREFIX, gpuRequest));
     socket.registerCommand(legacyCommand("getoption", COMMAND_MATCH_PREFIX, dispatchGetOption));
     socket.registerCommand(legacyCommand("decorations", COMMAND_MATCH_PREFIX, decorationRequest));
     socket.registerCommand(legacyCommand("eval", COMMAND_MATCH_PREFIX, evalRequest));

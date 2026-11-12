@@ -188,6 +188,13 @@ namespace Render::GL {
         };
 
         void makeEGLCurrent();
+
+        // GPU swap: tear the EGL context down and build it again on another DRM device.
+        // Textures survive (pixels kept on the CPU across the swap); framebuffers, renderbuffers and shaders are rebuilt on use.
+        // In two halves, because aquamarine's own renderer shares a GPU's EGL display with us: lose first,
+        // let aquamarine rebuild, then restore.
+        void loseContext();
+        void restoreContext(int drmFD);
         bool begin(CRenderContext& ctx, PHLMONITOR, const CRegion& damage, SP<IFramebuffer> fb = nullptr, std::optional<CRegion> finalDamage = {});
         void beginSimple(CRenderContext& ctx, PHLMONITOR, const CRegion& damage, SP<IRenderbuffer> rb = nullptr, SP<IFramebuffer> fb = nullptr);
         void end(CRenderContext& ctx);
@@ -337,6 +344,9 @@ namespace Render::GL {
         GLuint                  m_currentProgram;
 
         void                    initDRMFormats();
+        void                    initContext();
+        bool                    m_contextLost = false;
+        void                    destroyContext();
         void                    initEGL(bool gbm);
         EGLDeviceEXT            eglDeviceFromDRMFD(int drmFD);
 

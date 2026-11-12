@@ -113,6 +113,10 @@ namespace Render {
         void                            setCursorSurface(SP<Desktop::View::CWLSurface> surf, int hotspotX, int hotspotY, bool force = false);
         void                            setCursorFromName(const std::string& name, bool force = false);
         void                            onRenderbufferDestroy(IRenderbuffer* rb);
+
+        // GPU swap, see CHyprOpenGLImpl::switchDevice()
+        virtual void                    onContextLost();
+        virtual void                    onContextRestored();
         bool                            isNvidia();
         bool                            isIntel();
         bool                            isSoftware();

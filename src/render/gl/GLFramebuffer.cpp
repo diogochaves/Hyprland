@@ -10,6 +10,26 @@
 using namespace Hyprgraphics::Egl;
 using namespace Render::GL;
 
+static std::vector<CGLFramebuffer*>& allFramebuffers() {
+    static std::vector<CGLFramebuffer*> framebuffers;
+    return framebuffers;
+}
+
+CGLFramebuffer::SRegistration::SRegistration(CGLFramebuffer* fb) : m_fb(fb) {
+    allFramebuffers().emplace_back(fb);
+}
+
+CGLFramebuffer::SRegistration::~SRegistration() {
+    std::erase(allFramebuffers(), m_fb);
+}
+
+void CGLFramebuffer::contextLostAll() {
+    // release() can drop textures but never another framebuffer, so the list is stable
+    for (auto* fb : allFramebuffers()) {
+        fb->release();
+    }
+}
+
 CGLFramebuffer::CGLFramebuffer() : IFramebuffer(), m_tempBuf(true) {}
 CGLFramebuffer::CGLFramebuffer(const std::string& name) : IFramebuffer(name), m_tempBuf(true) {}
 

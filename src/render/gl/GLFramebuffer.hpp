@@ -24,6 +24,9 @@ namespace Render::GL {
         // clear at most once per invalidate()
         void clearAfterInvalidation();
 
+        // GPU swap: every framebuffer is released while the old context is current; users re-alloc
+        static void contextLostAll();
+
       protected:
         bool internalAlloc(int w, int h, DRMFormat format = DRM_FORMAT_ARGB8888) override;
 
@@ -31,6 +34,12 @@ namespace Render::GL {
         GLuint m_fb      = -1;
         bool   m_tempBuf = false;
         bool   m_cleared = false;
+
+        struct SRegistration {
+            SRegistration(CGLFramebuffer* fb);
+            ~SRegistration();
+            CGLFramebuffer* m_fb = nullptr;
+        } m_registration{this};
 
         friend class CGLRenderbuffer;
     };

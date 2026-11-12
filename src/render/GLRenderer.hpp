@@ -44,6 +44,8 @@ namespace Render::GL {
         SP<IFramebuffer>     blurFramebuffer(CRenderContext& ctx, SP<IFramebuffer> source, float strength, const CRegion& originalDamage,
                                              const Render::SBlurContext& context = {}) override;
         void                 refreshBlurProvider() override;
+        void                    onContextLost() override;
+        void                    onContextRestored() override;
         void                 expandBlurDamage(CRegion& damage, float multiplier = 1.F) const override;
         bool                 blurProviderIsAnimated(CRenderContext& ctx) const override;
         bool                 blurProviderRequiresLiveBlur() const override;

@@ -29,6 +29,13 @@ namespace Render::GL {
         bool ok() override;
         bool isDMA() override;
 
+        // GPU swap: the EGL context is about to go (it is current) / a new one is current.
+        // A lost texture keeps its pixels on the CPU and gets them back, under a new GL name.
+        static void contextLostAll();
+        static void contextRestoredAll();
+        // a dmabuf texture gets its buffer back as a new EGLImage, of which it takes ownership
+        void rebindImage(void* image);
+
       private:
         void* m_eglImage = nullptr;
 
@@ -50,5 +57,23 @@ namespace Render::GL {
         constexpr std::optional<size_t>                    getCacheStateIndex(GLenum pname);
 
         std::array<std::optional<GLint>, TEXTURE_PAR_LAST> m_cachedStates;
+
+        void                                               contextLost();
+        void                                               contextRestored();
+
+        struct SLost {
+            bool                                               active = false;
+            std::vector<uint8_t>                               pixels; // RGBA8, the raw texels
+            std::array<std::optional<GLint>, TEXTURE_PAR_LAST> states;
+        } m_lost;
+
+        std::vector<float> m_lutCopy; // RGBA, only for 3D LUTs
+        size_t             m_lutN = 0;
+
+        struct SRegistration {
+            SRegistration(CGLTexture* tex);
+            ~SRegistration();
+            CGLTexture* m_tex = nullptr;
+        } m_registration{this};
     };
 }

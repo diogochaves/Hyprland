@@ -362,6 +362,22 @@ SP<IFramebuffer> CHyprGLRenderer::blurFramebuffer(CRenderContext& ctx, SP<IFrame
     return m_blur->blur(ctx, source, strength, originalDamage, context);
 }
 
+void CHyprGLRenderer::onContextLost() {
+    m_pendingBufferUses.clear();
+    m_blur.reset();
+    IHyprRenderer::onContextLost();
+}
+
+void CHyprGLRenderer::onContextRestored() {
+    if (const auto* renderer = rc<const char*>(glGetString(GL_RENDERER))) {
+        const std::string_view name{renderer};
+        m_software = StringUtils::containsCaseInsensitive(name, "llvmpipe") || StringUtils::containsCaseInsensitive(name, "softpipe") ||
+            StringUtils::containsCaseInsensitive(name, "Software Rasterizer");
+    }
+
+    refreshBlurProvider();
+}
+
 void CHyprGLRenderer::refreshBlurProvider() {
     static auto PBLURTYPE = CConfigValue<Config::INTEGER>("decoration:blur:variant");
 

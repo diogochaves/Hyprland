@@ -53,6 +53,7 @@
 
 #include "config/ConfigManager.hpp"
 #include "render/OpenGL.hpp"
+#include "protocols/types/DMABuffer.hpp"
 #include "managers/input/InputManager.hpp"
 #include "animation/AnimationManager.hpp"
 #include "ipc/s2/S2.hpp"
@@ -357,33 +358,7 @@ void CCompositor::initServer(std::string socketName, int socketFd) {
     LOG(Log::INFO, "If you are crashing, or encounter any bugs, please consult https://wiki.hypr.land/crashes-and-bugs/\n\n");
     LOG(Log::DEBUG, "\nCurrent splash: {}\n\n", m_currentSplash);
 
-    m_drm.fd = m_aqBackend->drmFD();
-    LOG(Log::DEBUG, "Running on DRMFD: {}", m_drm.fd);
-
-    m_drmRenderNode.fd = m_aqBackend->drmRenderNodeFD();
-    LOG(Log::DEBUG, "Using RENDERNODEFD: {}", m_drmRenderNode.fd);
-
-#if defined(__linux__)
-    auto syncObjSupport = [](auto fd) {
-        if (fd < 0)
-            return false;
-
-        uint64_t cap = 0;
-        int      ret = drmGetCap(fd, DRM_CAP_SYNCOBJ_TIMELINE, &cap);
-        return ret == 0 && cap != 0;
-    };
-
-    m_drm.syncobjSupport = syncObjSupport(m_drm.fd);
-    LOG(Log::DEBUG, "DRM DisplayNode syncobj timeline support: {}", m_drm.syncobjSupport ? "yes" : "no");
-
-    m_drmRenderNode.syncObjSupport = syncObjSupport(m_drmRenderNode.fd);
-    LOG(Log::DEBUG, "DRM RenderNode syncobj timeline support: {}", m_drmRenderNode.syncObjSupport ? "yes" : "no");
-
-    if (!m_drm.syncobjSupport && !m_drmRenderNode.syncObjSupport)
-        LOG(Log::DEBUG, "DRM no syncobj support, disabling explicit sync");
-#else
-    LOG(Log::DEBUG, "DRM syncobj timeline support: no (not linux)");
-#endif
+    refreshDRMFDs();
 
     if (!socketName.empty() && socketFd != -1) {
         fcntl(socketFd, F_SETFD, FD_CLOEXEC);
@@ -459,7 +434,59 @@ void CCompositor::initServer(std::string socketName, int socketFd) {
     pendingOutputs.clear();
 }
 
+void CCompositor::refreshDRMFDs() {
+    m_drm.fd = m_aqBackend->drmFD();
+    LOG(Log::DEBUG, "Running on DRMFD: {}", m_drm.fd);
+
+    m_drmRenderNode.fd = m_aqBackend->drmRenderNodeFD();
+    LOG(Log::DEBUG, "Using RENDERNODEFD: {}", m_drmRenderNode.fd);
+
+#if defined(__linux__)
+    auto syncObjSupport = [](auto fd) {
+        if (fd < 0)
+            return false;
+
+        uint64_t cap = 0;
+        int      ret = drmGetCap(fd, DRM_CAP_SYNCOBJ_TIMELINE, &cap);
+        return ret == 0 && cap != 0;
+    };
+
+    m_drm.syncobjSupport = syncObjSupport(m_drm.fd);
+    LOG(Log::DEBUG, "DRM DisplayNode syncobj timeline support: {}", m_drm.syncobjSupport ? "yes" : "no");
+
+    m_drmRenderNode.syncObjSupport = syncObjSupport(m_drmRenderNode.fd);
+    LOG(Log::DEBUG, "DRM RenderNode syncobj timeline support: {}", m_drmRenderNode.syncObjSupport ? "yes" : "no");
+
+    if (!m_drm.syncobjSupport && !m_drmRenderNode.syncObjSupport)
+        LOG(Log::DEBUG, "DRM no syncobj support, disabling explicit sync");
+#else
+    LOG(Log::DEBUG, "DRM syncobj timeline support: no (not linux)");
+#endif
+}
+
+void CCompositor::onPrimaryGPUChanged() {
+    refreshDRMFDs();
+
+    if (!g_pHyprOpenGL || !g_pHyprRenderer)
+        return;
+
+    g_pHyprOpenGL->restoreContext(m_drmRenderNode.fd >= 0 ? m_drmRenderNode.fd : m_drm.fd);
+    CDMABuffer::reimportAll();
+    Pointer::mgr()->onGPUChanged();
+
+    for (auto const& m : State::monitorState()->monitors()) {
+        g_pHyprRenderer->damageMonitor(m);
+        m->scheduleFrame(Aquamarine::IOutput::AQ_SCHEDULE_NEEDS_FRAME);
+    }
+}
+
 void CCompositor::initAllSignals() {
+    m_aqBackend->gpuEvents.primaryChanging.listenStatic([] {
+        if (g_pHyprOpenGL && g_pHyprRenderer)
+            g_pHyprOpenGL->loseContext();
+    });
+    m_aqBackend->gpuEvents.primaryChanged.listenStatic([this] { onPrimaryGPUChanged(); });
+
     m_aqBackend->events.newOutput.listenStatic([this](const SP<Aquamarine::IOutput>& output) {
         LOG(Log::DEBUG, "New aquamarine output with name {}", output->name);
         if (m_initialized)

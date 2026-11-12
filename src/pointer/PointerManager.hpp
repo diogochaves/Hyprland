@@ -56,6 +56,8 @@ namespace Pointer {
         void setCursorBuffer(SP<Aquamarine::IBuffer> buf, const Vector2D& hotspot, const float& scale);
         void setCursorSurface(SP<Desktop::View::CWLSurface> buf, const Vector2D& hotspot);
         void resetCursorImage(bool apply = true);
+        // GPU swap: cursor buffers of the old GPU are gone, draw the cursor again
+        void onGPUChanged();
 
         void lockSoftwareForMonitor(PHLMONITOR pMonitor);
         void unlockSoftwareForMonitor(PHLMONITOR pMonitor);

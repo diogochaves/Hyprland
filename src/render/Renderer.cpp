@@ -3326,6 +3326,16 @@ bool IHyprRenderer::beginRenderToBuffer(PHLMONITOR pMonitor, CRegion& damage, SP
     return beginRender(pMonitor, damage, RENDER_MODE_TO_BUFFER, buffer, nullptr, simple);
 }
 
+void IHyprRenderer::onContextLost() {
+    m_context.m_usedAsyncBuffers.clear();
+    m_context.m_currentRenderbuffer.reset();
+    m_renderbuffers.clear();
+}
+
+void IHyprRenderer::onContextRestored() {
+    ;
+}
+
 void IHyprRenderer::onRenderbufferDestroy(IRenderbuffer* rb) {
     std::erase_if(m_renderbuffers, [&](const auto& rbo) { return rbo.get() == rb; });
 }

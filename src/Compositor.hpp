@@ -59,6 +59,8 @@ class CCompositor {
     std::string              m_startLockedCommand = "";
 
     void                     initServer(std::string socketName, int socketFd);
+    void                     refreshDRMFDs();
+    void                     onPrimaryGPUChanged(); // aquamarine moved the primary to another GPU
     void                     startCompositor();
     void                     stopCompositor();
     void                     cleanup();
