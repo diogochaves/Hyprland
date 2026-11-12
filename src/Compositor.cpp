@@ -32,6 +32,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <sstream>
 #include "ipc/s1/S1.hpp"
 #include "debug/crash/CrashReporter.hpp"
 #include "render/GLRenderer.hpp"
@@ -470,12 +471,47 @@ void CCompositor::refreshDRMFDs() {
 #endif
 }
 
+// HYPRLAND_CLIENT_ENV="K=V;K2=V2": variables for everything we start, set only once our own EGL is up.
+// libglvnd has read its vendor list by then, so e.g. __EGL_VENDOR_LIBRARY_FILENAMES can keep clients
+// on one GPU's driver without taking the others away from the compositor.
+void CCompositor::applyClientEnv() {
+    const auto* const ENV = std::getenv("HYPRLAND_CLIENT_ENV");
+    if (!ENV)
+        return;
+
+    std::istringstream stream{std::string{ENV}};
+    for (std::string v; std::getline(stream, v, ';');) {
+        const auto EQ = v.find('=');
+        if (EQ == std::string::npos || EQ == 0)
+            continue;
+
+        setenv(v.substr(0, EQ).c_str(), v.substr(EQ + 1).c_str(), 1);
+        LOG(Log::DEBUG, "Client env: {}", v);
+    }
+}
+
+// HYPRLAND_CLIENT_DRM_DEVICE=<node>: the GPU clients are told to allocate on (linux-dmabuf's main device,
+// wl_drm's node), whatever GPU we render on. With it a GPU swap changes nothing for clients.
+// Returns the fd of nothing: just the node, or "" when unset or unusable.
+std::string CCompositor::clientDRMDevice() {
+    const auto* const ENV = std::getenv("HYPRLAND_CLIENT_DRM_DEVICE");
+    if (!ENV || !*ENV)
+        return "";
+
+    std::error_code ec;
+    const auto      PATH = std::filesystem::canonical(ENV, ec);
+    return ec ? "" : PATH.string();
+}
+
 bool CCompositor::releaseGPU(SP<Aquamarine::IBackendImplementation> gpu) {
     if (!gpu || !gpu->getPrimary())
         return false; // not ours, or the primary
 
-    // the lease protocol holds the backend: clients lose that device
-    std::erase_if(PROTO::lease, [&](const auto& entry) { return entry.second && entry.second->backend() == gpu; });
+    // clients of the lease protocol are told the device is gone and close their fds of it
+    for (auto const& [name, lease] : PROTO::lease) {
+        if (lease && lease->getBackend() == gpu)
+            lease->retire();
+    }
 
     return m_aqBackend->releaseGpu(gpu);
 }
@@ -608,8 +644,16 @@ bool CCompositor::acquireGPU(const std::string& node) {
             continue;
 
         auto lease = makeShared<CDRMLeaseProtocol>(&wp_drm_lease_device_v1_interface, 1, "DRMLease", b);
-        if (lease->good())
-            PROTO::lease.emplace(lease->getDeviceName(), lease);
+        if (!lease->good())
+            continue;
+
+        // a retired one of the same device stays alive for its clients
+        if (auto it = PROTO::lease.find(lease->getDeviceName()); it != PROTO::lease.end()) {
+            PROTO::retiredLeases.emplace_back(it->second);
+            PROTO::lease.erase(it);
+        }
+
+        PROTO::lease.emplace(lease->getDeviceName(), lease);
     }
 
     return true;
@@ -889,6 +933,7 @@ void CCompositor::initManagers(eManagersInitStage stage) {
         case STAGE_BASICINIT: {
             LOG(Log::DEBUG, "Creating the CHyprOpenGLImpl!");
             g_pHyprOpenGL = makeUnique<CHyprOpenGLImpl>();
+            applyClientEnv();
 
             LOG(Log::DEBUG, "Creating the HyprRenderer!");
             g_pHyprRenderer = makeUnique<CHyprGLRenderer>();

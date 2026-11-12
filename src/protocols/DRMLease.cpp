@@ -238,6 +238,12 @@ CDRMLeaseDeviceResource::CDRMLeaseDeviceResource(std::string deviceName_, SP<CWp
         RESOURCE->m_parent = m_self;
     });
 
+    if (PROTO::lease.at(m_deviceName)->m_retired) {
+        // bound in a race with the GPU's release: nothing to offer
+        m_resource->sendReleased();
+        return;
+    }
+
     CFileDescriptor fd{PROTO::lease.at(m_deviceName)->m_backend.get()->getNonMasterFD()};
     if (!fd.isValid()) {
         LOG(Log::ERR, "Failed to dup fd in lease");
@@ -282,8 +288,16 @@ void CDRMLeaseDeviceResource::sendConnector(PHLMONITOR monitor) {
     RESOURCE->sendData();
 }
 
-SP<Aquamarine::IBackendImplementation> CDRMLeaseProtocol::backend() {
-    return m_backend;
+void CDRMLeaseProtocol::retire() {
+    if (m_retired)
+        return;
+
+    m_retired = true;
+    removeGlobal();
+
+    for (auto const& m : m_managers) {
+        m->m_resource->sendReleased();
+    }
 }
 
 CDRMLeaseProtocol::CDRMLeaseProtocol(const wl_interface* iface, const int& ver, const std::string& name, SP<Aquamarine::IBackendImplementation> backend_) :

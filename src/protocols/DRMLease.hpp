@@ -103,7 +103,9 @@ class CDRMLeaseProtocol : public IWaylandProtocol {
 
     SP<Aquamarine::IBackendImplementation> getBackend();
     std::string                            getDeviceName();
-    SP<Aquamarine::IBackendImplementation> backend();
+    // the GPU is going away: tell bound clients (wp_drm_lease_device_v1.released) and take the global down.
+    // The object must stay alive afterwards, its clients still hold resources of it.
+    void                                   retire();
     bool                                   good();
 
   private:
@@ -120,6 +122,7 @@ class CDRMLeaseProtocol : public IWaylandProtocol {
 
     std::string                                 m_deviceName = "";
     bool                                        m_success    = false;
+    bool                                        m_retired    = false;
     SP<Aquamarine::CDRMBackend>                 m_backend;
     std::vector<PHLMONITORREF>                  m_offeredOutputs;
 
@@ -131,4 +134,5 @@ class CDRMLeaseProtocol : public IWaylandProtocol {
 
 namespace PROTO {
     inline std::unordered_map<std::string, SP<CDRMLeaseProtocol>> lease;
+    inline std::vector<SP<CDRMLeaseProtocol>>                     retiredLeases; // of released GPUs, kept for their clients' resources
 };

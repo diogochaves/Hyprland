@@ -26,6 +26,20 @@ static std::optional<dev_t> devIDFromFD(int fd) {
     return stat.st_rdev;
 }
 
+// the device clients should allocate on: HYPRLAND_CLIENT_DRM_DEVICE if set, else the one we render on
+static std::optional<dev_t> clientDevID(int rendererFD) {
+    const auto CLIENT = g_pCompositor->clientDRMDevice();
+    if (CLIENT.empty())
+        return devIDFromFD(rendererFD);
+
+    struct stat st;
+    if (stat(CLIENT.c_str(), &st) != 0)
+        return devIDFromFD(rendererFD);
+
+    LOG(Log::DEBUG, "linux-dmabuf: clients are sent to {}", CLIENT);
+    return st.st_rdev;
+}
+
 CDMABUFFormatTable::CDMABUFFormatTable(SDMABUFTranche _rendererTranche, std::vector<std::pair<PHLMONITORREF, SDMABUFTranche>> tranches_) :
     m_rendererTranche(_rendererTranche), m_monitorTranches(tranches_) {
 
@@ -465,7 +479,7 @@ CLinuxDMABufV1Protocol::CLinuxDMABufV1Protocol(const wl_interface* iface, const 
 
     static auto P = Event::bus()->m_events.ready.listen([this] {
         int  rendererFD = g_pCompositor->m_drmRenderNode.fd >= 0 ? g_pCompositor->m_drmRenderNode.fd : g_pCompositor->m_drm.fd;
-        auto dev        = devIDFromFD(rendererFD);
+        auto dev        = clientDevID(rendererFD);
 
         if (!dev.has_value()) {
             LOG(Log::ERR, "failed to get drm dev, disabling linux dmabuf");
@@ -528,7 +542,7 @@ void CLinuxDMABufV1Protocol::openMainDevice(int rendererFD) {
         return;
     }
 
-    if (g_pCompositor->m_drmRenderNode.fd >= 0 && rendererFD == g_pCompositor->m_drmRenderNode.fd) {
+    if (g_pCompositor->m_drmRenderNode.fd >= 0 && rendererFD == g_pCompositor->m_drmRenderNode.fd && devIDFromFD(rendererFD) == m_mainDevice) {
         // Already using the compositor's render node, reuse it.
         m_mainDeviceFD = CFileDescriptor{fcntl(g_pCompositor->m_drmRenderNode.fd, F_DUPFD_CLOEXEC, 0)};
         drmFreeDevice(&device);
@@ -560,7 +574,7 @@ void CLinuxDMABufV1Protocol::onGPUChanged() {
         return;
 
     const int  RENDERER_FD = g_pCompositor->m_drmRenderNode.fd >= 0 ? g_pCompositor->m_drmRenderNode.fd : g_pCompositor->m_drm.fd;
-    const auto DEV         = devIDFromFD(RENDERER_FD);
+    const auto DEV         = clientDevID(RENDERER_FD);
     if (!DEV.has_value()) {
         LOG(Log::ERR, "GPU swap: failed to get the new drm dev, linux dmabuf keeps the old one");
         return;

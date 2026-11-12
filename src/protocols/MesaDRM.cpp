@@ -1,6 +1,7 @@
 #include "MesaDRM.hpp"
 #include <algorithm>
 #include <xf86drm.h>
+#include <sys/stat.h>
 #include "../Compositor.hpp"
 #include "render/Renderer.hpp"
 #include "types/WLBuffer.hpp"
@@ -125,10 +126,14 @@ void CMesaDRMProtocol::onGPUChanged() {
 }
 
 void CMesaDRMProtocol::updateNode() {
-    drmDevice* dev   = nullptr;
-    int        drmFD = g_pCompositor->m_drmRenderNode.fd >= 0 ? g_pCompositor->m_drmRenderNode.fd : g_pCompositor->m_drm.fd;
+    drmDevice*  dev   = nullptr;
+    int         drmFD = g_pCompositor->m_drmRenderNode.fd >= 0 ? g_pCompositor->m_drmRenderNode.fd : g_pCompositor->m_drm.fd;
 
-    if (drmGetDevice2(drmFD, 0, &dev) != 0) {
+    const auto  CLIENT     = g_pCompositor->clientDRMDevice();
+    struct stat st         = {};
+    const bool  USE_CLIENT = !CLIENT.empty() && stat(CLIENT.c_str(), &st) == 0;
+
+    if ((USE_CLIENT ? drmGetDeviceFromDevId(st.st_rdev, 0, &dev) : drmGetDevice2(drmFD, 0, &dev)) != 0) {
         LOG(Log::ERR, "Failed to get device from fd {}, disabling MesaDRM", drmFD);
         removeGlobal();
         return;

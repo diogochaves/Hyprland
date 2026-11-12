@@ -61,6 +61,8 @@ class CCompositor {
     void                     initServer(std::string socketName, int socketFd);
     void                     refreshDRMFDs();
     void                     onPrimaryGPUChanged(); // aquamarine moved the primary to another GPU
+    void                     applyClientEnv();
+    std::string              clientDRMDevice(); // "" = clients follow the render GPU
     bool                     releaseGPU(SP<Aquamarine::IBackendImplementation> gpu);
     bool                     acquireGPU(const std::string& node);
     std::string              yankGPU(const std::string& node);  // after releaseGPU: close what its driver left open in this process

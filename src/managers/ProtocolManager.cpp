@@ -343,6 +343,7 @@ CProtocolManager::~CProtocolManager() {
     for (auto& [_, lease] : PROTO::lease) {
         lease.reset();
     }
+    PROTO::retiredLeases.clear();
     PROTO::sync.reset();
     PROTO::mesaDRM.reset();
     PROTO::linuxDma.reset();
