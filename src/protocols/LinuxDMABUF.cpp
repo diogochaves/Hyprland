@@ -40,6 +40,32 @@ static std::optional<dev_t> clientDevID(int rendererFD) {
     return st.st_rdev;
 }
 
+// true while clients allocate on a GPU we don't render on (HYPRLAND_CLIENT_DRM_DEVICE names another node)
+static bool clientsOnOtherDevice() {
+    const int  RENDERER_FD = g_pCompositor->m_drmRenderNode.fd >= 0 ? g_pCompositor->m_drmRenderNode.fd : g_pCompositor->m_drm.fd;
+    const auto CLIENT      = clientDevID(RENDERER_FD);
+    const auto RENDERER    = devIDFromFD(RENDERER_FD);
+    return CLIENT.has_value() && RENDERER.has_value() && *CLIENT != *RENDERER;
+}
+
+// The formats clients may allocate. Ours come from the GPU we render on; while clients allocate on
+// another GPU its vendor modifiers mean nothing there (Mesa on amdgpu, handed NVIDIA's, fails the
+// allocation and crashes in eglSwapBuffers), so only LINEAR is offered: the one layout every driver
+// can both write and import.
+static std::vector<SDRMFormat> clientFormats(std::vector<SDRMFormat> formats) {
+    if (!clientsOnOtherDevice())
+        return formats;
+
+    std::vector<SDRMFormat> out;
+    for (auto const& fmt : formats) {
+        if (std::ranges::find(fmt.modifiers, DRM_FORMAT_MOD_LINEAR) != fmt.modifiers.end())
+            out.emplace_back(SDRMFormat{.drmFormat = fmt.drmFormat, .modifiers = {DRM_FORMAT_MOD_LINEAR}});
+    }
+
+    LOG(Log::DEBUG, "linux-dmabuf: clients are on another GPU, {} of {} formats offered, LINEAR only", out.size(), formats.size());
+    return out;
+}
+
 CDMABUFFormatTable::CDMABUFFormatTable(SDMABUFTranche _rendererTranche, std::vector<std::pair<PHLMONITORREF, SDMABUFTranche>> tranches_) :
     m_rendererTranche(_rendererTranche), m_monitorTranches(tranches_) {
 
@@ -492,7 +518,7 @@ CLinuxDMABufV1Protocol::CLinuxDMABufV1Protocol(const wl_interface* iface, const 
         SDMABUFTranche eglTranche = {
             .device  = m_mainDevice,
             .flags   = 0, // renderer isn't for ds so don't set flag.
-            .formats = g_pHyprRenderer->getDRMFormats(),
+            .formats = clientFormats(g_pHyprRenderer->getDRMFormats()),
         };
 
         std::vector<std::pair<PHLMONITORREF, SDMABUFTranche>> tches;
@@ -584,7 +610,7 @@ void CLinuxDMABufV1Protocol::onGPUChanged() {
     openMainDevice(RENDERER_FD);
 
     m_formatTable->m_rendererTranche.device  = m_mainDevice;
-    m_formatTable->m_rendererTranche.formats = g_pHyprRenderer->getDRMFormats();
+    m_formatTable->m_rendererTranche.formats = clientFormats(g_pHyprRenderer->getDRMFormats());
 
     for (auto& [mon, tranche] : m_formatTable->m_monitorTranches) {
         tranche.device = m_mainDevice;
@@ -671,6 +697,12 @@ void CLinuxDMABufV1Protocol::updateScanoutTranche(SP<CWLSurfaceResource> surface
 void CLinuxDMABUFFeedbackResource::sendScanoutFeedback(PHLMONITOR pMonitor) {
     if (!pMonitor) {
         LOG(Log::DEBUG, "updateScanoutTranche: resetting feedback");
+        sendDefaultFeedback();
+        return;
+    }
+
+    // a buffer of another GPU can't go on our planes, and the scanout tranche carries only our vendor's modifiers
+    if (clientsOnOtherDevice()) {
         sendDefaultFeedback();
         return;
     }
