@@ -526,6 +526,8 @@ void CHyprOpenGLImpl::loseContext() {
     m_blend            = false;
     m_currentProgram   = 0;
     m_drmFormats.clear();
+    m_externalOnlyFormats.clear();
+    m_extResolve = {}; // its GL objects went with the context
     m_hasModifiers      = false;
     m_fp16Supported     = false;
     m_eglContextVersion = EGL_CONTEXT_GLES_3_2;
@@ -603,6 +605,13 @@ std::optional<std::vector<uint64_t>> CHyprOpenGLImpl::getModsForFormat(EGLint fo
         if (external[i]) {
             if (mods[i] == DRM_FORMAT_MOD_LINEAR)
                 linearIsExternal = true;
+
+            // kept apart: never a format we render to or offer, unless clients allocate on another GPU
+            auto it = std::ranges::find_if(m_externalOnlyFormats, [format](const auto& f) { return f.drmFormat == sc<uint32_t>(format); });
+            if (it == m_externalOnlyFormats.end())
+                m_externalOnlyFormats.emplace_back(SDRMFormat{.drmFormat = sc<uint32_t>(format), .modifiers = {mods[i]}});
+            else if (std::ranges::find(it->modifiers, mods[i]) == it->modifiers.end())
+                it->modifiers.emplace_back(mods[i]);
             continue;
         }
 
@@ -2709,6 +2718,135 @@ WP<CShader> CHyprOpenGLImpl::getShaderVariant(ePreparedFragmentShader frag, cons
 
 std::vector<SDRMFormat> CHyprOpenGLImpl::getDRMFormats() {
     return m_drmFormats;
+}
+
+std::vector<SDRMFormat> CHyprOpenGLImpl::getExternalOnlyDRMFormats() {
+    return m_externalOnlyFormats;
+}
+
+bool CHyprOpenGLImpl::isExternalOnly(uint32_t drmFormat, uint64_t modifier) {
+    return std::ranges::any_of(m_externalOnlyFormats,
+                               [&](const auto& f) { return f.drmFormat == drmFormat && std::ranges::find(f.modifiers, modifier) != f.modifiers.end(); });
+}
+
+bool CHyprOpenGLImpl::initExtResolve() {
+    if (m_extResolve.program)
+        return true;
+    if (m_extResolve.failed)
+        return false;
+
+    static const char* VERT = R"glsl(#version 300 es
+out vec2 v_texcoord;
+void main() {
+    vec2 pos    = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2));
+    v_texcoord  = pos;
+    gl_Position = vec4(pos * 2.0 - 1.0, 0.0, 1.0);
+}
+)glsl";
+
+    static const char* FRAG = R"glsl(#version 300 es
+#extension GL_OES_EGL_image_external_essl3 : require
+precision highp float;
+in vec2                    v_texcoord;
+uniform samplerExternalOES tex;
+layout(location = 0) out vec4 fragColor;
+void main() {
+    fragColor = texture(tex, v_texcoord);
+}
+)glsl";
+
+    const auto compile = [](GLenum type, const char* src) -> GLuint {
+        GLuint sh = glCreateShader(type);
+        glShaderSource(sh, 1, &src, nullptr);
+        glCompileShader(sh);
+        GLint ok = GL_FALSE;
+        glGetShaderiv(sh, GL_COMPILE_STATUS, &ok);
+        if (ok == GL_TRUE)
+            return sh;
+
+        std::array<char, 1024> log = {};
+        glGetShaderInfoLog(sh, log.size() - 1, nullptr, log.data());
+        LOG(Log::ERR, "external textures: the copy shader failed to compile: {}", log.data());
+        glDeleteShader(sh);
+        return 0;
+    };
+
+    const GLuint VS = compile(GL_VERTEX_SHADER, VERT);
+    const GLuint FS = compile(GL_FRAGMENT_SHADER, FRAG);
+    GLuint       prog = 0;
+
+    if (VS && FS) {
+        prog = glCreateProgram();
+        glAttachShader(prog, VS);
+        glAttachShader(prog, FS);
+        glLinkProgram(prog);
+        GLint ok = GL_FALSE;
+        glGetProgramiv(prog, GL_LINK_STATUS, &ok);
+        if (ok != GL_TRUE) {
+            LOG(Log::ERR, "external textures: the copy shader failed to link");
+            glDeleteProgram(prog);
+            prog = 0;
+        }
+    }
+
+    if (VS)
+        glDeleteShader(VS);
+    if (FS)
+        glDeleteShader(FS);
+
+    if (!prog) {
+        m_extResolve.failed = true;
+        return false;
+    }
+
+    glUseProgram(prog);
+    m_currentProgram = prog;
+    glUniform1i(glGetUniformLocation(prog, "tex"), 0);
+
+    m_extResolve.program = prog;
+    glGenFramebuffers(1, &m_extResolve.fbo);
+    glGenVertexArrays(1, &m_extResolve.vao);
+    return true;
+}
+
+void CHyprOpenGLImpl::resolveExternal(GLuint externalTex, GLuint tex2D, const Vector2D& size) {
+    if (!externalTex || !tex2D || size.x < 1 || size.y < 1)
+        return;
+
+    makeEGLCurrent();
+
+    if (!initExtResolve())
+        return;
+
+    CFramebufferBindingGuard bindings{g_pHyprOpenGL};
+
+    const bool               BLEND   = m_capStatus[CAP_STATUS_BLEND];
+    const bool               SCISSOR = m_capStatus[CAP_STATUS_SCISSOR_TEST];
+    const bool               STENCIL = m_capStatus[CAP_STATUS_STENCIL_TEST];
+
+    bindFramebuffer(GL_FRAMEBUFFER, m_extResolve.fbo);
+    GLCALL(glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex2D, 0));
+    setViewport(0, 0, size.x, size.y);
+    setCapStatus(GL_BLEND, false);
+    setCapStatus(GL_SCISSOR_TEST, false);
+    setCapStatus(GL_STENCIL_TEST, false);
+
+    if (m_currentProgram != m_extResolve.program) {
+        glUseProgram(m_extResolve.program);
+        m_currentProgram = m_extResolve.program;
+    }
+
+    setActiveTexture(GL_TEXTURE0);
+    GLCALL(glBindTexture(GL_TEXTURE_EXTERNAL_OES, externalTex));
+    GLCALL(glBindVertexArray(m_extResolve.vao));
+    GLCALL(glDrawArrays(GL_TRIANGLES, 0, 3));
+    GLCALL(glBindVertexArray(0));
+    GLCALL(glBindTexture(GL_TEXTURE_EXTERNAL_OES, 0));
+    GLCALL(glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, 0, 0));
+
+    setCapStatus(GL_BLEND, BLEND);
+    setCapStatus(GL_SCISSOR_TEST, SCISSOR);
+    setCapStatus(GL_STENCIL_TEST, STENCIL);
 }
 
 void SRenderModifData::applyToBox(CBox& box) {

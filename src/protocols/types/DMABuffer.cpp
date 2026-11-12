@@ -55,7 +55,7 @@ bool CDMABuffer::reimport() {
     if (!image)
         return false;
 
-    TEX->rebindImage(image);
+    TEX->rebindImage(m_attrs, image);
     return true;
 }
 
@@ -109,7 +109,9 @@ Aquamarine::eBufferType CDMABuffer::type() {
 }
 
 void CDMABuffer::update(const CRegion& damage) {
-    ;
+    // only does something for a texture that holds a copy (an external-only import)
+    if (m_texture)
+        m_texture->refresh();
 }
 
 bool CDMABuffer::isSynchronous() {

@@ -28,16 +28,22 @@ namespace Render::GL {
         void setTexParameter(GLenum pname, GLint param) override;
         bool ok() override;
         bool isDMA() override;
+        void refresh() override;
 
         // GPU swap: the EGL context is about to go (it is current) / a new one is current.
         // A lost texture keeps its pixels on the CPU and gets them back, under a new GL name.
         static void contextLostAll();
         static void contextRestoredAll();
         // a dmabuf texture gets its buffer back as a new EGLImage, of which it takes ownership
-        void rebindImage(void* image);
+        void rebindImage(const Aquamarine::SDMABUFAttrs& attrs, void* image);
 
       private:
         void* m_eglImage = nullptr;
+
+        // A dmabuf EGL only imports as GL_TEXTURE_EXTERNAL_OES (NVIDIA, a LINEAR buffer of another GPU) is bound
+        // to this name, and m_texID holds a plain 2D copy of it, taken at every refresh().
+        GLuint m_externalTexID = 0;
+        void   attachImage(const Aquamarine::SDMABUFAttrs& attrs, void* image);
 
         enum eTextureParam : uint8_t {
             TEXTURE_PAR_WRAP_S = 0,

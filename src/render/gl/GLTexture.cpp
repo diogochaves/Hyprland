@@ -75,6 +75,10 @@ void CGLTexture::contextLost() {
         GLCALL(glDeleteTextures(1, &m_texID));
     m_texID = 0;
 
+    if (m_externalTexID)
+        GLCALL(glDeleteTextures(1, &m_externalTexID));
+    m_externalTexID = 0;
+
     if (m_eglImage)
         g_pHyprOpenGL->m_proc.eglDestroyImageKHR(g_pHyprOpenGL->m_eglDisplay, m_eglImage);
     m_eglImage = nullptr;
@@ -115,15 +119,53 @@ void CGLTexture::contextRestored() {
     m_lost.pixels.shrink_to_fit();
 }
 
-void CGLTexture::rebindImage(void* image) {
+void CGLTexture::rebindImage(const Aquamarine::SDMABUFAttrs& attrs, void* image) {
     if (!image || !m_texID || m_target != GL_TEXTURE_2D)
         return;
 
-    bind();
-    GLCALL(g_pHyprOpenGL->m_proc.glEGLImageTargetTexture2DOES(m_target, image));
-    unbind();
+    if (m_externalTexID)
+        GLCALL(glDeleteTextures(1, &m_externalTexID));
+    m_externalTexID = 0;
 
+    attachImage(attrs, image);
+    refresh();
+}
+
+void CGLTexture::attachImage(const Aquamarine::SDMABUFAttrs& attrs, void* image) {
     m_eglImage = image;
+
+    if (!g_pHyprOpenGL->isExternalOnly(attrs.format, attrs.modifier)) {
+        bind();
+        setTexParameter(GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        setTexParameter(GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        GLCALL(g_pHyprOpenGL->m_proc.glEGLImageTargetTexture2DOES(GL_TEXTURE_2D, image));
+        unbind();
+        return;
+    }
+
+    // external-only: the image goes on an external texture, m_texID gets storage for the copy
+    GLCALL(glGenTextures(1, &m_externalTexID));
+    GLCALL(glBindTexture(GL_TEXTURE_EXTERNAL_OES, m_externalTexID));
+    GLCALL(glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MIN_FILTER, GL_NEAREST));
+    GLCALL(glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MAG_FILTER, GL_NEAREST));
+    GLCALL(glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE));
+    GLCALL(glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE));
+    GLCALL(g_pHyprOpenGL->m_proc.glEGLImageTargetTexture2DOES(GL_TEXTURE_EXTERNAL_OES, image));
+    GLCALL(glBindTexture(GL_TEXTURE_EXTERNAL_OES, 0));
+
+    const bool DEEP = attrs.format == DRM_FORMAT_XRGB2101010 || attrs.format == DRM_FORMAT_XBGR2101010 || attrs.format == DRM_FORMAT_ARGB2101010 ||
+        attrs.format == DRM_FORMAT_ABGR2101010;
+
+    bind();
+    setTexParameter(GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    setTexParameter(GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    GLCALL(glTexImage2D(GL_TEXTURE_2D, 0, DEEP ? GL_RGB10_A2 : GL_RGBA8, m_size.x, m_size.y, 0, GL_RGBA, DEEP ? GL_UNSIGNED_INT_2_10_10_10_REV : GL_UNSIGNED_BYTE, nullptr));
+    unbind();
+}
+
+void CGLTexture::refresh() {
+    if (m_externalTexID && m_texID)
+        g_pHyprOpenGL->resolveExternal(m_externalTexID, m_texID, m_size);
 }
 
 CGLTexture::CGLTexture(bool opaque) {
@@ -138,6 +180,11 @@ CGLTexture::~CGLTexture() {
     if (m_texID) {
         GLCALL(glDeleteTextures(1, &m_texID));
         m_texID = 0;
+    }
+
+    if (m_externalTexID) {
+        GLCALL(glDeleteTextures(1, &m_externalTexID));
+        m_externalTexID = 0;
     }
 
     if (m_eglImage)
@@ -191,24 +238,13 @@ CGLTexture::CGLTexture(const Aquamarine::SDMABUFAttrs& attrs, void* image, bool 
 
     m_opaque = isDrmFormatOpaque(attrs.format);
 
-    // #TODO external only formats should be external as well.
-    // also needs a separate color shader.
-    /*if (NFormatUtils::isFormatYUV(attrs.format)) {
-        m_target = GL_TEXTURE_EXTERNAL_OES;
-        m_type   = TEXTURE_EXTERNAL;
-    } else {*/
+    // An external-only (format, modifier) is still a 2D texture to everyone else: attachImage() keeps the
+    // external one to itself and refresh() copies it over. YUV would need its own shader; it is not offered.
     m_target = GL_TEXTURE_2D;
     m_type   = isDrmFormatOpaque(attrs.format) ? TEXTURE_RGBX : TEXTURE_RGBA;
-    //}
 
     allocate(attrs.size, attrs.format);
-    m_eglImage = image;
-
-    bind();
-    setTexParameter(GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    setTexParameter(GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    GLCALL(g_pHyprOpenGL->m_proc.glEGLImageTargetTexture2DOES(m_target, image));
-    unbind();
+    attachImage(attrs, image);
 }
 
 CGLTexture::CGLTexture(std::span<const float> lut3D, size_t N) : ITexture(lut3D, N), m_target(GL_TEXTURE_3D) {

@@ -208,6 +208,10 @@ namespace Render {
         virtual bool         fp16Supported()                                                                                                                                 = 0;
         virtual std::vector<SDRMFormat> getDRMFormats()                                                                                                                      = 0;
         virtual std::vector<uint64_t>   getDRMFormatModifiers(DRMFormat format)                                                                                              = 0;
+        // (format, modifier) pairs the renderer can only sample through a copy (GL: external-only); never in getDRMFormats()
+        virtual std::vector<SDRMFormat> getExternalOnlyDRMFormats() {
+            return {};
+        }
         virtual SP<IFramebuffer>        createFB(const std::string& name = "")                                                                                               = 0;
         virtual void                    disableScissor()                                                                                                                     = 0;
         virtual void                    blend(bool enabled)                                                                                                                  = 0;

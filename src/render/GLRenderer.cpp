@@ -321,6 +321,10 @@ std::vector<SDRMFormat> CHyprGLRenderer::getDRMFormats() {
     return g_pHyprOpenGL->getDRMFormats();
 }
 
+std::vector<SDRMFormat> CHyprGLRenderer::getExternalOnlyDRMFormats() {
+    return g_pHyprOpenGL->getExternalOnlyDRMFormats();
+}
+
 std::vector<uint64_t> CHyprGLRenderer::getDRMFormatModifiers(DRMFormat format) {
     return g_pHyprOpenGL->getDRMFormatModifiers(format);
 }

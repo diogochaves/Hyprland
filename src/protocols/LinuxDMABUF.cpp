@@ -56,9 +56,13 @@ static std::vector<SDRMFormat> clientFormats(std::vector<SDRMFormat> formats) {
     if (!clientsOnOtherDevice())
         return formats;
 
+    // LINEAR the renderer only takes through a copy counts too (NVIDIA: external-only): it is all there is
+    const auto              EXTERNAL = g_pHyprRenderer->getExternalOnlyDRMFormats();
+    const auto              hasLinear = [](const SDRMFormat& f) { return std::ranges::find(f.modifiers, DRM_FORMAT_MOD_LINEAR) != f.modifiers.end(); };
+
     std::vector<SDRMFormat> out;
     for (auto const& fmt : formats) {
-        if (std::ranges::find(fmt.modifiers, DRM_FORMAT_MOD_LINEAR) != fmt.modifiers.end())
+        if (hasLinear(fmt) || std::ranges::any_of(EXTERNAL, [&](const auto& e) { return e.drmFormat == fmt.drmFormat && hasLinear(e); }))
             out.emplace_back(SDRMFormat{.drmFormat = fmt.drmFormat, .modifiers = {DRM_FORMAT_MOD_LINEAR}});
     }
 

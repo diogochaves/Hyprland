@@ -34,6 +34,8 @@ namespace Render {
         virtual void                unbind() {};
         virtual bool                ok();
         virtual bool                isDMA();
+        // the buffer behind this texture has new content (a commit): a texture that holds a copy takes it now
+        virtual void                refresh() {};
 
         const std::vector<uint8_t>& dataCopy();
 

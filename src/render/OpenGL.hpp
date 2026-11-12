@@ -240,6 +240,11 @@ namespace Render::GL {
         void                                      renderOffToMain(CRenderContext& ctx, SP<IFramebuffer> off);
 
         std::vector<SDRMFormat>                   getDRMFormats();
+        // (format, modifier) pairs EGL imports only as GL_TEXTURE_EXTERNAL_OES (NVIDIA: LINEAR, a buffer of another GPU)
+        std::vector<SDRMFormat>                   getExternalOnlyDRMFormats();
+        bool                                      isExternalOnly(uint32_t drmFormat, uint64_t modifier);
+        // copies an external texture into a plain 2D one of the same size, so the rest of the renderer never meets an external sampler
+        void                                      resolveExternal(GLuint externalTex, GLuint tex2D, const Vector2D& size);
         std::vector<uint64_t>                     getDRMFormatModifiers(DRMFormat format);
         EGLImageKHR                               createEGLImage(const Aquamarine::SDMABUFAttrs& attrs);
 
@@ -331,6 +336,13 @@ namespace Render::GL {
         GLenum                  m_blendDFactor     = GL_ZERO;
 
         std::vector<SDRMFormat> m_drmFormats;
+        std::vector<SDRMFormat> m_externalOnlyFormats;
+
+        struct {
+            GLuint program = 0, fbo = 0, vao = 0;
+            bool   failed = false;
+        } m_extResolve;
+        bool                    initExtResolve();
         bool                    m_hasModifiers  = false;
         bool                    m_fp16Supported = false;
 

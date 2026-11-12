@@ -29,6 +29,7 @@ namespace Render::GL {
         bool                    explicitSyncSupported() override;
         bool                    fp16Supported() override;
         std::vector<SDRMFormat> getDRMFormats() override;
+        std::vector<SDRMFormat> getExternalOnlyDRMFormats() override;
         std::vector<uint64_t>   getDRMFormatModifiers(DRMFormat format) override;
         SP<IFramebuffer>        createFB(const std::string& name = "") override;
         void                    disableScissor() override;
