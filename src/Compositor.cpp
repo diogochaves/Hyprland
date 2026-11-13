@@ -26,6 +26,11 @@
 #include "state/MonitorState.hpp"
 #include "state/WorkspaceState.hpp"
 #include <aquamarine/output/Output.hpp>
+#include <linux/sync_file.h>
+#include <sys/ioctl.h>
+#include <fcntl.h>
+#include <ranges>
+#include <algorithm>
 #include <ctime>
 #include <random>
 #include <print>
@@ -537,6 +542,39 @@ static std::vector<std::string> gpuDevicePaths(const std::string& node) {
     return paths;
 }
 
+// Whether a sync_file may hold a fence of a driver whose name contains `needle` (lower case):
+// it names that driver, or it is signalled. The kernel hides the driver of a signalled fence
+// ("detached-driver") and leaves it out of the fence list, yet the file still holds the fence.
+static bool syncFileMayHoldFenceOf(int fd, std::string_view needle) {
+    sync_file_info info = {};
+    if (ioctl(fd, SYNC_IOC_FILE_INFO, &info) != 0)
+        return false;
+
+    if (info.status == 1)
+        return true;
+
+    const auto HAS = [&](const char* name) {
+        std::string n{name};
+        std::ranges::transform(n, n.begin(), [](unsigned char c) { return std::tolower(c); });
+        return n.contains(needle);
+    };
+
+    if (HAS(info.name))
+        return true;
+
+    if (info.num_fences == 0)
+        return false;
+
+    std::vector<sync_fence_info> fences(info.num_fences);
+    sync_file_info               full = {};
+    full.num_fences                   = info.num_fences;
+    full.sync_fence_info              = rc<uintptr_t>(fences.data());
+    if (ioctl(fd, SYNC_IOC_FILE_INFO, &full) != 0)
+        return false;
+
+    return std::ranges::any_of(fences | std::views::take(full.num_fences), [&](const auto& f) { return HAS(f.driver_name) || HAS(f.obj_name); });
+}
+
 std::string CCompositor::yankGPU(const std::string& node) {
     for (auto const& impl : m_aqBackend->getImplementations()) {
         if (impl->type() != Aquamarine::AQ_BACKEND_DRM || impl->drmFD() < 0)
@@ -573,6 +611,49 @@ std::string CCompositor::yankGPU(const std::string& node) {
         close(fd);
     }
 
+    // A sync_file with one of NVIDIA's fences outlives all of that: once nvidia-drm is unloaded,
+    // dropping its last reference (at the latest when this process ends) runs the driver's code
+    // that is gone, and the kernel oopses in dma_fence_release. Nothing should hold one after a
+    // release; if something does, swap the file under its fd for a signalled sync_file of no
+    // driver (the owner still closes its own number, and any use of it sees a finished fence).
+    size_t fences = 0;
+    if (std::ranges::contains(PATHS, std::string{"/dev/nvidia"})) {
+        std::vector<int> syncs;
+        for (auto const& e : std::filesystem::directory_iterator("/proc/self/fd", ec)) {
+            const auto TARGET = std::filesystem::read_symlink(e.path(), ec);
+            if (ec || TARGET.string() != "anon_inode:sync_file")
+                continue;
+
+            try {
+                syncs.emplace_back(std::stoi(e.path().filename().string()));
+            } catch (...) { ; }
+        }
+
+        // the kernel's stub fence, through a signalled syncobj of the GPU we still have
+        int      stub   = -1;
+        uint32_t handle = 0;
+        if (m_drm.fd >= 0 && drmSyncobjCreate(m_drm.fd, DRM_SYNCOBJ_CREATE_SIGNALED, &handle) == 0) {
+            if (drmSyncobjExportSyncFile(m_drm.fd, handle, &stub) != 0)
+                stub = -1;
+            drmSyncobjDestroy(m_drm.fd, handle);
+        }
+        if (stub < 0)
+            stub = open("/dev/null", O_RDONLY | O_CLOEXEC);
+
+        for (auto const& fd : syncs) {
+            if (stub < 0 || fd == stub || !syncFileMayHoldFenceOf(fd, "nvidia"))
+                continue;
+
+            if (dup3(stub, fd, O_CLOEXEC) == fd)
+                ++fences;
+        }
+        if (stub >= 0)
+            close(stub);
+
+        if (fences > 0)
+            LOG(Log::INFO, "GPU swap: {} sync files that may have held a fence of {} replaced", fences, node);
+    }
+
     std::vector<std::pair<uintptr_t, uintptr_t>> maps;
     std::ifstream                                mapsFile("/proc/self/maps");
     for (std::string line; std::getline(mapsFile, line);) {
@@ -593,7 +674,7 @@ std::string CCompositor::yankGPU(const std::string& node) {
     m_yankedGPUs.emplace_back(node);
 
     LOG(Log::INFO, "GPU swap: yanked {} fds and {} mappings of {}", fds.size(), maps.size(), node);
-    return std::format("ok: {} fds, {} mappings", fds.size(), maps.size());
+    return fences > 0 ? std::format("ok: {} fds, {} mappings, {} fences", fds.size(), maps.size(), fences) : std::format("ok: {} fds, {} mappings", fds.size(), maps.size());
 }
 
 // The whole way out of a GPU: render elsewhere, let go of it, drop what its driver left behind.
