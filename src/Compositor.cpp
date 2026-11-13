@@ -25,6 +25,7 @@
 #include "state/FallbackState.hpp"
 #include "state/MonitorState.hpp"
 #include "state/WorkspaceState.hpp"
+#include <dlfcn.h>
 #include <aquamarine/output/Output.hpp>
 #include <linux/sync_file.h>
 #include <sys/ioctl.h>
@@ -518,8 +519,24 @@ bool CCompositor::releaseGPU(SP<Aquamarine::IBackendImplementation> gpu) {
             lease->retire();
     }
 
+    bool nvidia = false;
+    if (auto* const VER = drmGetVersion(gpu->drmFD()); VER) {
+        nvidia = std::string_view{VER->name, sc<size_t>(VER->name_len)}.contains("nvidia");
+        drmFreeVersion(VER);
+    }
+
     if (!m_aqBackend->releaseGpu(gpu))
         return false;
+
+    // NVIDIA's EGL keeps its device files for as long as its libraries are loaded. With eglmux
+    // linked in they live in a copy of libEGL of their own: unload it, and their destructors
+    // close everything, leaving a process the driver can come back to (the yank cannot do that).
+    if (nvidia) {
+        if (auto* const UNLOAD = rc<int (*)()>(dlsym(RTLD_DEFAULT, "eglmux_nvidia_unload")); UNLOAD) {
+            const int LEFT = UNLOAD();
+            LOG(LEFT ? Log::ERR : Log::INFO, "GPU swap: NVIDIA's libraries unloaded, {} still mapped", LEFT);
+        }
+    }
 
     if (g_pHyprRenderer)
         g_pHyprRenderer->refreshDriverInfo();
@@ -609,6 +626,7 @@ std::string CCompositor::yankGPU(const std::string& node) {
 
         try {
             fds.emplace_back(std::stoi(e.path().filename().string()));
+            LOG(Log::INFO, "GPU swap: yank closes fd {} -> {}", fds.back(), TARGET.string());
         } catch (...) { ; }
     }
 
@@ -675,8 +693,10 @@ std::string CCompositor::yankGPU(const std::string& node) {
         munmap(rc<void*>(start), end - start);
     }
 
-    // that driver's EGL can't be brought back in this process after this
-    m_yankedGPUs.emplace_back(node);
+    // that driver's EGL can't be brought back in this process after this; with nothing to yank
+    // (its libraries were unloaded, eglmux) it can
+    if (!fds.empty() || !maps.empty())
+        m_yankedGPUs.emplace_back(node);
 
     LOG(Log::INFO, "GPU swap: yanked {} fds and {} mappings of {}", fds.size(), maps.size(), node);
     return fences > 0 ? std::format("ok: {} fds, {} mappings, {} fences", fds.size(), maps.size(), fences) : std::format("ok: {} fds, {} mappings", fds.size(), maps.size());
@@ -756,6 +776,9 @@ bool CCompositor::acquireGPU(const std::string& node) {
     }
 
     const auto BEFORE = m_aqBackend->getImplementations();
+
+    if (auto* const ALLOW = rc<void (*)()>(dlsym(RTLD_DEFAULT, "eglmux_nvidia_allow")); ALLOW)
+        ALLOW();
 
     if (!m_aqBackend->acquireGpu(node))
         return false;

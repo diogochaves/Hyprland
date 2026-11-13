@@ -305,6 +305,14 @@ endif()
 
 add_library(hyprland_lib STATIC ${SRCFILES})
 add_executable(Hyprland src/main.cpp ${TRACY_CPP_FILES})
+# gpuswap: with eglmux installed, EGL goes through it (first in the link order, so its egl* win
+# for us and for aquamarine): NVIDIA's EGL can then be unloaded with a released GPU and loaded
+# again when it comes back. Without it nothing changes.
+find_library(EGLMUX_LIB eglmux)
+if(EGLMUX_LIB)
+  message(STATUS "gpuswap: linking eglmux (${EGLMUX_LIB})")
+  target_link_libraries(Hyprland -Wl,--push-state,--no-as-needed ${EGLMUX_LIB} -Wl,--pop-state)
+endif()
 target_link_libraries(Hyprland hyprland_lib)
 
 target_include_directories(hyprland_lib PUBLIC ${deps_INCLUDE_DIRS} ${LUA_INCLUDE_DIRS})
