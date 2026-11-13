@@ -518,7 +518,12 @@ bool CCompositor::releaseGPU(SP<Aquamarine::IBackendImplementation> gpu) {
             lease->retire();
     }
 
-    return m_aqBackend->releaseGpu(gpu);
+    if (!m_aqBackend->releaseGpu(gpu))
+        return false;
+
+    if (g_pHyprRenderer)
+        g_pHyprRenderer->refreshDriverInfo();
+    return true;
 }
 
 // Paths a GPU's leftovers in this process point at: its DRM nodes, plus NVIDIA's own device files.
@@ -755,6 +760,9 @@ bool CCompositor::acquireGPU(const std::string& node) {
     if (!m_aqBackend->acquireGpu(node))
         return false;
 
+    if (g_pHyprRenderer)
+        g_pHyprRenderer->refreshDriverInfo();
+
     for (auto const& b : m_aqBackend->getImplementations()) {
         if (b->type() != Aquamarine::AQ_BACKEND_DRM || std::ranges::contains(BEFORE, b))
             continue;
@@ -781,6 +789,7 @@ void CCompositor::onPrimaryGPUChanged() {
     if (!g_pHyprOpenGL || !g_pHyprRenderer)
         return;
 
+    g_pHyprRenderer->refreshDriverInfo();
     g_pHyprOpenGL->restoreContext(m_drmRenderNode.fd >= 0 ? m_drmRenderNode.fd : m_drm.fd);
     CDMABuffer::reimportAll();
     Pointer::mgr()->onGPUChanged();

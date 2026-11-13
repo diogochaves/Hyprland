@@ -95,8 +95,14 @@ static int cursorTicker(void* data) {
     return 0;
 }
 
-IHyprRenderer::IHyprRenderer() {
-    m_globalTimer.reset();
+// Which drivers the session's GPUs use. Read at start and again whenever the set of GPUs
+// changes (a release, an acquire, a new primary): what is done for NVIDIA or for several
+// GPUs should stop once the card is gone, and start when one is taken.
+void IHyprRenderer::refreshDriverInfo() {
+    const bool WASNVIDIA = m_nvidia;
+    m_nvidia             = false;
+    m_intel              = false;
+    m_mgpu               = false;
 
     if (g_pCompositor->m_aqBackend->hasSession()) {
         size_t drmDevices = 0;
@@ -142,8 +148,14 @@ IHyprRenderer::IHyprRenderer() {
         drmFreeVersion(DRMV);
     }
 
-    if (m_nvidia)
+    if (m_nvidia && !WASNVIDIA)
         LOG(Log::WARN, "NVIDIA detected, please remember to follow nvidia instructions on the wiki");
+}
+
+IHyprRenderer::IHyprRenderer() {
+    m_globalTimer.reset();
+
+    refreshDriverInfo();
 
     // cursor hiding stuff
 

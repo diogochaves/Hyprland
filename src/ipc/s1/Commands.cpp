@@ -1414,6 +1414,8 @@ static std::string gpuRequest(eHyprCtlOutputFormat format, std::string request) 
                 continue;
             out += std::format("{}{}\n", drmNodeOf(impl->drmFD()), impl->getPrimary() ? "" : " (primary)");
         }
+        if (g_pHyprRenderer)
+            out += std::format("drivers: nvidia {}, several GPUs {}\n", g_pHyprRenderer->isNvidia() ? "yes" : "no", g_pHyprRenderer->isMgpu() ? "yes" : "no");
         return out;
     }
 

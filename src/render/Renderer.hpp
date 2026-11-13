@@ -117,6 +117,7 @@ namespace Render {
         // GPU swap, see CHyprOpenGLImpl::switchDevice()
         virtual void                    onContextLost();
         virtual void                    onContextRestored();
+        void                            refreshDriverInfo();
         bool                            isNvidia();
         bool                            isIntel();
         bool                            isSoftware();
