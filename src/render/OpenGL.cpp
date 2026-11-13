@@ -2934,6 +2934,11 @@ UP<CEGLSync> CEGLSync::create() {
         return nullptr;
     }
 
+    // NVIDIA's EGL returns this fd without close-on-exec (Mesa sets it), and the executor
+    // closes nothing in its children: every program started while a fence was open kept a
+    // sync_file with one of the driver's fences for its whole life.
+    fcntl(fd, F_SETFD, FD_CLOEXEC);
+
     UP<CEGLSync> eglSync(new CEGLSync);
     eglSync->m_fd    = CFileDescriptor(fd);
     eglSync->m_sync  = sync;
