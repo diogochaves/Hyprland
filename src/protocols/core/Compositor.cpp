@@ -672,7 +672,7 @@ void CWLSurfaceResource::commitState(SSurfaceState& state) {
         if (m_current.buffer->isSynchronous())
             m_current.updateSynchronousTexture(lastTexture);
         else if (state.updated.bits.buffer || state.updated.bits.damage)
-            m_current.buffer->update(m_current.accumulateBufferDamage());
+            m_current.buffer->update({}); // not accumulateBufferDamage(): it takes the damage the view needs to schedule a frame
 
         // if the surface is a cursor, update the shm buffer
         // TODO: don't update the entire texture
