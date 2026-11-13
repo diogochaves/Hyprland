@@ -660,6 +660,9 @@ bool CMonitor::applyMonitorRuleSoft(Config::CMonitorRule&& pMonitorRule) {
     return true;
 }
 
+static constexpr auto FORMATS_10BIT = std::to_array<uint32_t>({DRM_FORMAT_XRGB2101010, DRM_FORMAT_XBGR2101010});
+static constexpr auto FORMATS_8BIT  = std::to_array<uint32_t>({DRM_FORMAT_XRGB8888, DRM_FORMAT_XBGR8888});
+
 bool CMonitor::applyMonitorRule(Config::CMonitorRule&& pMonitorRule) {
 
     static auto PDISABLESCALECHECKS = CConfigValue<Config::INTEGER>("debug:disable_scale_checks");
@@ -923,12 +926,9 @@ bool CMonitor::applyMonitorRule(Config::CMonitorRule&& pMonitorRule) {
 
     m_output->state->setMaxBpc(RULE->m_enable10bit ? 10 : 8);
 
-    static constexpr auto formats10bit = std::to_array<uint32_t>({DRM_FORMAT_XRGB2101010, DRM_FORMAT_XBGR2101010});
-    static constexpr auto formats8bit  = std::to_array<uint32_t>({DRM_FORMAT_XRGB8888, DRM_FORMAT_XBGR8888});
-
-    const bool            set10bit = RULE->m_enable10bit && trySetFormat(formats10bit);
+    const bool set10bit = RULE->m_enable10bit && trySetFormat(FORMATS_10BIT);
     if (!set10bit)
-        trySetFormat(formats8bit);
+        trySetFormat(FORMATS_8BIT);
 
     m_enabled10bit = set10bit;
 
@@ -2742,6 +2742,27 @@ WP<CMonitorResources> CMonitor::resources() {
         m_resources->setImageDescription(DESC);
 
     return m_resources;
+}
+
+void CMonitor::ensureFormat() {
+    // After a primary GPU switch the swapchain is the new primary's, and it may not allocate the
+    // format this output had (XR30 on NVIDIA for an amdgpu output): every commit then failed and
+    // the output kept its last frame. Pick again, as applyMonitorRule() does.
+    if (!m_enabled || !m_output || !m_output->state->state().enabled || m_state.test())
+        return;
+
+    LOG(Log::WARN, "output {}: format {} no longer passes the test, choosing again", m_name, drmFormatToString(m_drmFormat));
+
+    const auto OLD      = m_drmFormat;
+    const bool set10bit = m_activeMonitorRule.m_enable10bit && trySetFormat(FORMATS_10BIT);
+    if (!set10bit && !trySetFormat(FORMATS_8BIT)) {
+        // nothing passes: keep what it had rather than the last one tried
+        m_output->state->setFormat(OLD);
+        m_drmFormat = OLD;
+        return;
+    }
+
+    m_enabled10bit = set10bit;
 }
 
 bool CMonitor::trySetFormat(std::span<const uint32_t> formats) {

@@ -826,6 +826,7 @@ void CCompositor::onPrimaryGPUChanged() {
         PROTO::linuxDma->onGPUChanged();
 
     for (auto const& m : State::monitorState()->monitors()) {
+        m->ensureFormat();
         g_pHyprRenderer->damageMonitor(m);
         m->scheduleFrame(Aquamarine::IOutput::AQ_SCHEDULE_NEEDS_FRAME);
     }

@@ -318,6 +318,7 @@ namespace Monitor {
 
         //
         bool applyMonitorRule(Config::CMonitorRule&& pMonitorRule);
+        void ensureFormat(); // after a primary GPU switch: a format the new allocator can make
         bool applyMonitorRuleSoft(Config::CMonitorRule&& pMonitorRule);
 
         //
