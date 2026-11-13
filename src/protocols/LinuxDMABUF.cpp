@@ -52,8 +52,18 @@ static bool clientsOnOtherDevice() {
 // another GPU its vendor modifiers mean nothing there (Mesa on amdgpu, handed NVIDIA's, fails the
 // allocation and crashes in eglSwapBuffers), so only LINEAR is offered: the one layout every driver
 // can both write and import.
+//
+// Once LINEAR-only, LINEAR-only for the rest of the session, also after a gpu leave puts the renderer on
+// the clients' GPU. Mesa's EGL keeps the modifiers of the first feedback for the life of its display
+// and refuses to make a wl_buffer with any other (create_wl_buffer), so a client that started under
+// the LINEAR offer and is then offered that GPU's own modifiers allocates with one of them and fails
+// every eglSwapBuffers with EGL_BAD_ALLOC from then on. And a way back to the first GPU needs LINEAR again.
 static std::vector<SDRMFormat> clientFormats(std::vector<SDRMFormat> formats) {
-    if (!clientsOnOtherDevice())
+    static bool linearOnly = false;
+    if (clientsOnOtherDevice())
+        linearOnly = true;
+
+    if (!linearOnly)
         return formats;
 
     // LINEAR the renderer only takes through a copy counts too (NVIDIA: external-only): it is all there is
@@ -66,7 +76,7 @@ static std::vector<SDRMFormat> clientFormats(std::vector<SDRMFormat> formats) {
             out.emplace_back(SDRMFormat{.drmFormat = fmt.drmFormat, .modifiers = {DRM_FORMAT_MOD_LINEAR}});
     }
 
-    LOG(Log::DEBUG, "linux-dmabuf: clients are on another GPU, {} of {} formats offered, LINEAR only", out.size(), formats.size());
+    LOG(Log::DEBUG, "linux-dmabuf: clients are or were on another GPU, {} of {} formats offered, LINEAR only", out.size(), formats.size());
     return out;
 }
 
