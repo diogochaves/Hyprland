@@ -2605,7 +2605,9 @@ bool CMonitorState::commit() {
     if (m_owner->m_commitCoordinator->deferStateCommit())
         return true;
 
-    if (!updateSwapchain())
+    // Turning an output off needs no buffer. After a primary switch its format may be one the new
+    // primary cannot allocate (XR30 on NVIDIA), and failing here left the CRTC scanning out its last frame.
+    if (!updateSwapchain() && m_owner->m_output->state->state().enabled)
         return false;
 
     Event::bus()->m_events.monitor.preCommit.emit(m_owner->m_self.lock());
