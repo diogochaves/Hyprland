@@ -60,6 +60,7 @@ class CCompositor {
 
     void                     initServer(std::string socketName, int socketFd);
     void                     refreshDRMFDs();
+    std::string              switchPrimaryGPU(SP<Aquamarine::IBackendImplementation> gpu); // "ok", or why not
     void                     onPrimaryGPUChanged(); // aquamarine moved the primary to another GPU
     void                     applyClientEnv();
     std::string              clientDRMDevice(); // "" = clients follow the render GPU

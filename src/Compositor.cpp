@@ -678,6 +678,22 @@ std::string CCompositor::yankGPU(const std::string& node) {
 }
 
 // The whole way out of a GPU: render elsewhere, let go of it, drop what its driver left behind.
+// Make another GPU the one we render on. Asked first whether our EGL can start there: after the
+// switch has begun the old context is gone, and a failure on the new GPU ends the session.
+std::string CCompositor::switchPrimaryGPU(SP<Aquamarine::IBackendImplementation> gpu) {
+    if (!gpu || gpu->drmFD() < 0)
+        return "no such gpu in use";
+
+    if (g_pHyprOpenGL) {
+        if (const auto WHY = g_pHyprOpenGL->probeGPU(gpu->drmFD()); !WHY.empty()) {
+            LOG(Log::ERR, "GPU swap: not switching, EGL cannot start on the target: {}", WHY);
+            return "refused, EGL cannot start there: " + WHY;
+        }
+    }
+
+    return m_aqBackend->switchPrimary(gpu) ? "ok" : "failed";
+}
+
 std::string CCompositor::leaveGPU(const std::string& node) {
     SP<Aquamarine::IBackendImplementation> gpu, other;
     PHLWORKSPACEREF                        shownWorkspace;
@@ -713,8 +729,8 @@ std::string CCompositor::leaveGPU(const std::string& node) {
         if (!gpu->getPrimary()) {
             if (!other)
                 return "no other gpu to move to";
-            if (!m_aqBackend->switchPrimary(other))
-                return "switch failed";
+            if (const auto RES = switchPrimaryGPU(other); RES != "ok")
+                return "switch " + RES;
         }
 
         if (!releaseGPU(gpu))

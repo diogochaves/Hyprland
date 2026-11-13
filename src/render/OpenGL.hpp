@@ -194,6 +194,7 @@ namespace Render::GL {
         // In two halves, because aquamarine's own renderer shares a GPU's EGL display with us: lose first,
         // let aquamarine rebuild, then restore.
         void loseContext();
+        std::string probeGPU(int drmFD); // "" when our EGL can start on that GPU
         void restoreContext(int drmFD);
         bool begin(CRenderContext& ctx, PHLMONITOR, const CRegion& damage, SP<IFramebuffer> fb = nullptr, std::optional<CRegion> finalDamage = {});
         void beginSimple(CRenderContext& ctx, PHLMONITOR, const CRegion& damage, SP<IRenderbuffer> rb = nullptr, SP<IFramebuffer> fb = nullptr);

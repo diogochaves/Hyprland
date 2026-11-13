@@ -493,6 +493,74 @@ void CHyprOpenGLImpl::destroyContext() {
     m_eglDevice  = nullptr;
 }
 
+// Whether our EGL could start on another GPU: a display, a GLES 3 context and what the renderer
+// asserts on. Asked before a swap, while the context we have is still whole: once loseContext()
+// has run there is no way back, and initContext() aborts on any of these.
+std::string CHyprOpenGLImpl::probeGPU(int drmFD) {
+    const std::string   CLIENTEXT = eglQueryString(EGL_NO_DISPLAY, EGL_EXTENSIONS);
+
+    std::vector<EGLint> dattrs;
+    if (m_exts.KHR_display_reference) {
+        dattrs.push_back(EGL_TRACK_REFERENCES_KHR);
+        dattrs.push_back(EGL_TRUE);
+    }
+    dattrs.push_back(EGL_NONE);
+
+    EGLDisplay      dpy = EGL_NO_DISPLAY;
+    gbm_device*     gbm = nullptr;
+    CFileDescriptor gbmFD;
+
+    if (CLIENTEXT.contains("EXT_platform_device") && m_proc.eglQueryDevicesEXT && m_proc.eglQueryDeviceStringEXT) {
+        if (const auto DEV = eglDeviceFromDRMFD(drmFD); DEV != EGL_NO_DEVICE_EXT)
+            dpy = m_proc.eglGetPlatformDisplayEXT(EGL_PLATFORM_DEVICE_EXT, DEV, dattrs.data());
+    }
+
+    if (dpy == EGL_NO_DISPLAY && CLIENTEXT.contains("KHR_platform_gbm")) {
+        gbmFD = CFileDescriptor{openRenderNode(drmFD)};
+        if (gbmFD.isValid())
+            gbm = gbm_create_device(gbmFD.get());
+        if (gbm)
+            dpy = m_proc.eglGetPlatformDisplayEXT(EGL_PLATFORM_GBM_KHR, gbm, dattrs.data());
+    }
+
+    std::string err;
+    EGLint      major = 0, minor = 0;
+    if (dpy == EGL_NO_DISPLAY)
+        err = "no EGL display for it (is its driver's EGL library open to this process?)";
+    else if (dpy == m_eglDisplay)
+        ; // the display we render on
+    else if (eglInitialize(dpy, &major, &minor) == EGL_FALSE)
+        err = "its EGL display does not initialize";
+    else {
+        const EGLint     CATTRS[] = {EGL_CONTEXT_MAJOR_VERSION, 3, EGL_CONTEXT_MINOR_VERSION, 0, EGL_NONE};
+        const EGLContext CTX      = eglCreateContext(dpy, EGL_NO_CONFIG_KHR, EGL_NO_CONTEXT, CATTRS);
+        if (CTX == EGL_NO_CONTEXT)
+            err = "no GLES 3 context on it";
+        else {
+            if (eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, CTX) == EGL_FALSE)
+                err = "its context cannot be made current";
+            else {
+                const auto* const EXT = rc<const char*>(glGetString(GL_EXTENSIONS));
+                if (!EXT)
+                    err = "its GL extensions cannot be read";
+                else if (!std::string_view{EXT}.contains("GL_EXT_texture_format_BGRA8888"))
+                    err = "it lacks GL_EXT_texture_format_BGRA8888";
+            }
+            eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+            eglDestroyContext(dpy, CTX);
+        }
+
+        if (m_exts.KHR_display_reference)
+            eglTerminate(dpy);
+    }
+
+    if (gbm)
+        gbm_device_destroy(gbm);
+
+    makeEGLCurrent();
+    return err;
+}
+
 void CHyprOpenGLImpl::loseContext() {
     LOG(Log::INFO, "GPU swap: tearing the renderer down on drm fd {}", m_drmFD);
 

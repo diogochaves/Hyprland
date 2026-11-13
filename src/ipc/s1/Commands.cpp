@@ -1434,7 +1434,7 @@ static std::string gpuRequest(eHyprCtlOutputFormat format, std::string request) 
         return "no such gpu in use";
 
     if (vars[1] == "switch")
-        return BACKEND->switchPrimary(IMPL) ? "ok" : "failed";
+        return g_pCompositor->switchPrimaryGPU(IMPL);
 
     if (vars[1] == "release")
         return g_pCompositor->releaseGPU(IMPL) ? "ok" : "failed (is it the primary?)";
