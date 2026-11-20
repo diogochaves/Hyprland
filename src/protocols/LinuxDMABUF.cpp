@@ -59,7 +59,13 @@ static bool clientsOnOtherDevice() {
 // the LINEAR offer and is then offered that GPU's own modifiers allocates with one of them and fails
 // every eglSwapBuffers with EGL_BAD_ALLOC from then on. And a way back to the first GPU needs LINEAR again.
 static std::vector<SDRMFormat> clientFormats(std::vector<SDRMFormat> formats) {
-    static bool linearOnly = false;
+    // HYPRLAND_CLIENT_LINEAR_ONLY=1: LINEAR-only from the start. A GPU client started before the first
+    // swap keeps the tiled modifiers of its first feedback (Mesa, above) and hands the other GPU buffers
+    // it can't import: its windows go blank after the swap. With this no client ever gets them.
+    static bool linearOnly = [] {
+        const auto* const ENV = std::getenv("HYPRLAND_CLIENT_LINEAR_ONLY");
+        return ENV && std::string_view{ENV} == "1";
+    }();
     if (clientsOnOtherDevice())
         linearOnly = true;
 
